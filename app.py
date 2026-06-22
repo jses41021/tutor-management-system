@@ -119,6 +119,7 @@ def get_spreadsheet_id(url_or_id):
 def parse_raw_timetable(raw_df):
     """
     智慧型課表解析器：依據 Google 試算表視覺化排版
+    自動偵測「二下」、「三上」、「三下」等標記，並解析對應的星期課程。
     """
     cleaned_rows = []
     current_semester = None
@@ -212,13 +213,42 @@ if "db_students" not in st.session_state:
     })
 
 if "db_timetable" not in st.session_state:
-    st.session_state["db_timetable"] = pd.DataFrame()
+    st.session_state["db_timetable"] = pd.DataFrame([
+        # 二下課表
+        {"學期": "二下", "節次": "第一節", "星期一": "數學", "星期二": "體育", "星期三": "國防", "星期四": "數學", "星期五": "社會探究"},
+        {"學期": "二下", "節次": "第二節", "星期一": "歷史", "星期二": "新高學", "星期三": "國文", "星期四": "數學", "星期五": "社會探究"},
+        {"學期": "二下", "節次": "第三節", "星期一": "國文", "星期2": "新高學", "星期三": "公民", "星期四": "英文", "星期五": "社會探究"},
+        {"學期": "二下", "節次": "第四節", "星期一": "歷史", "星期二": "英文", "星期三": "體育", "星期四": "新媒體藝術", "星期五": "工程設計專題"},
+        {"學期": "二下", "節次": "第五節", "星期一": "地科探究", "星期二": "科技應用專題", "星期三": "國文", "星期四": "國文", "星期五": "班週會/社團"},
+        {"學期": "二下", "節次": "第六節", "星期一": "地科探究", "星期二": "數學", "星期三": "英文", "星期四": "自主學習", "星期五": "班週會/社團"},
+        {"學期": "二下", "節次": "第七節", "星期一": "創新生活與家庭", "星期二": "公民", "星期三": "英文", "星期四": "彈性學習", "星期五": "班週會/社團"},
+        # 三上課表
+        {"學期": "三上", "節次": "第一節", "星期一": "英文", "星期二": "數學", "星期三": "物理", "星期四": "國文", "星期五": "化學"},
+        {"學期": "三上", "節次": "第二節", "星期一": "英文", "星期二": "歷史", "星期三": "物理", "星期四": "國文", "星期五": "化學"},
+        {"學期": "三上", "節次": "第三節", "星期一": "國文", "星期二": "體育", "星期三": "地科", "星期四": "英文", "星期五": "數學"},
+        {"學期": "三上", "節次": "第四節", "星期一": "數學", "星期2": "公民", "星期三": "地科", "星期四": "音樂", "星期五": "數學"},
+        {"學期": "三上", "節次": "第五節", "星期一": "體育", "星期二": "自主學習", "星期三": "數學", "星期四": "國文", "星期五": "班週會/社團"},
+        {"學期": "三上", "節次": "第六節", "星期一": "化學", "星期二": "彈性學習", "星期三": "國文", "星期四": "物理", "星期五": "班週會/社團"},
+        {"學期": "三上", "節次": "第七節", "星期一": "化學", "星期二": "班會", "星期三": "英文", "星期四": "物理", "星期五": "班週會/社團"},
+    ])
 
 if "db_attendance" not in st.session_state:
     st.session_state["db_attendance"] = pd.DataFrame(columns=["日期", "座號", "姓名", "出席狀態"])
 
 if "db_scores" not in st.session_state:
-    st.session_state["db_scores"] = pd.DataFrame()
+    exams = ["高二上第一次段考", "高二上第二次段考", "高二上第三次段考"]
+    score_data = []
+    np.random.seed(42)
+    students = st.session_state["db_students"]
+    for ex in exams:
+        for idx, row in students.iterrows():
+            score_data.append({
+                "考試類別": ex, "座號": int(row["座號"]), "姓名": row["姓名"],
+                "國文": np.round(np.random.normal(50, 15), 1), "英文": np.round(np.random.normal(40, 18), 1),
+                "數學": np.round(np.random.normal(35, 12), 1), "歷史": np.round(np.random.normal(60, 10), 1),
+                "地理": np.round(np.random.normal(55, 12), 1), "公民": np.round(np.random.normal(58, 15), 1)
+            })
+    st.session_state["db_scores"] = pd.DataFrame(score_data)
 
 if "db_contribution_history" not in st.session_state:
     st.session_state["db_contribution_history"] = pd.DataFrame(columns=["日期", "座號", "姓名", "事由", "加扣分點數"])
@@ -270,17 +300,268 @@ with st.sidebar:
 # ==============================================================================
 if menu == "📅 課表與出缺席即時管理":
     st.markdown('<div class="main-title">📅 課表與出缺席即時管理</div>', unsafe_allow_html=True)
-    # ... (保持原本功能 1 不變以節省篇幅，此段與原版邏輯一致)
-    st.info("此處出缺席功能已載入，保留您原本的良好邏輯。")
-    # 此處略過冗長呈現，實際執行時請保留您原版功能 1 的完整代碼
     
+    col_sel1, col_sel2 = st.columns(2)
+    with col_sel1:
+        # 動態抓取課表中的學期選項，若無則預設為 "二下", "三上"
+        available_semesters = ["二下", "三上"]
+        if not st.session_state["db_timetable"].empty and "學期" in st.session_state["db_timetable"].columns:
+            available_semesters = st.session_state["db_timetable"]["學期"].astype(str).unique().tolist()
+            
+        selected_semester = st.selectbox("選擇學期課表", available_semesters)
+    with col_sel2:
+        today_date = st.date_input("點名日期", datetime.today())
+        
+    with st.expander("🔍 檢視本學期課表科目"):
+        timetable_df = st.session_state["db_timetable"]
+        if not timetable_df.empty and "學期" in timetable_df.columns:
+            sem_timetable = timetable_df[timetable_df["學期"].astype(str) == selected_semester]
+            st.dataframe(sem_timetable, use_container_width=True)
+        else:
+            sem_timetable = pd.DataFrame()
+            st.warning("尚未載入課表資料。")
+        
+    st.markdown("---")
+    
+    # 每日點名登記介面
+    st.subheader(f"📝 {today_date.strftime('%Y/%m/%d')} 每日缺席登記")
+    st.caption("💡 系統預設全員出席。若有缺席同學，請在下方勾選（支援多選、快速登記）：")
+    
+    students_df = st.session_state["db_students"]
+    student_options = [f"座號 {int(row['座號'])} - {row['姓名']}" for _, row in students_df.iterrows()]
+    absent_selections = st.multiselect("請選擇今日缺席的學生", student_options)
+    
+    if st.button("💾 儲存今日出缺席紀錄"):
+        absent_ids = [int(sel.split(" ")[1]) for sel in absent_selections]
+        
+        # 準備寫入本機暫存與雲端紀錄
+        new_records = []
+        gas_records = []
+        for _, row in students_df.iterrows():
+            status = "缺席" if int(row["座號"]) in absent_ids else "出席"
+            new_records.append({
+                "日期": today_date.strftime("%Y/%m/%d"),
+                "座號": int(row["座號"]),
+                "姓名": row["姓名"],
+                "出席狀態": status
+            })
+            gas_records.append([today_date.strftime("%Y/%m/%d"), int(row["座號"]), row["姓名"], status])
+        
+        new_df = pd.DataFrame(new_records)
+        
+        orig_attendance = st.session_state["db_attendance"]
+        if not orig_attendance.empty:
+            orig_attendance = orig_attendance[orig_attendance["日期"].astype(str) != today_date.strftime("%Y/%m/%d")]
+        
+        st.session_state["db_attendance"] = pd.concat([orig_attendance, new_df], ignore_index=True)
+        
+        # 透過 GAS 寫入 Google Sheet
+        payload = {
+            "action": "save_attendance",
+            "date": today_date.strftime("%Y/%m/%d"),
+            "records": gas_records
+        }
+        
+        success = write_data_via_apps_script(GAS_WEB_APP_URL, payload)
+        if not success:
+            st.info("💡 資料目前儲存於網頁暫存中。請確保 app.py 最上方的 GAS_WEB_APP_URL 填寫正確。")
+
+    # --------------------------------------------------------------------------
+    # 即時計算與呈現：學生各科目出席次數
+    # --------------------------------------------------------------------------
+    st.markdown("---")
+    st.subheader("📊 每位學生各科目「實際出席次數」累計表 (含首欄凍結窗格)")
+    st.caption("💡 計算規則：每當某日學生「出席」時，當天課表內出現的科目皆計為出席。重疊科目如當天有2節課，則出席次數+2。")
+    
+    days_of_week = ["星期一", "星期二", "星期三", "星期四", "星期五"]
+    
+    # 統計每日各科目的堂數
+    daily_subject_counts = {}
+    all_subjects = set()
+    
+    for day in days_of_week:
+        daily_subject_counts[day] = {}
+        if not sem_timetable.empty and day in sem_timetable.columns:
+            subjects_list = sem_timetable[day].replace('', np.nan).dropna().tolist()
+            for sub in subjects_list:
+                sub_clean = str(sub).strip()
+                if sub_clean and sub_clean != "nan" and sub_clean != "朝會" and "自主學習" not in sub_clean and "彈性學習" not in sub_clean:
+                    all_subjects.add(sub_clean)
+                    daily_subject_counts[day][sub_clean] = daily_subject_counts[day].get(sub_clean, 0) + 1
+                
+    sorted_subjects = sorted(list(all_subjects))
+    
+    # 建立每位同學的各科出席累計 dataframe
+    attendance_stats = pd.DataFrame(0, index=students_df["座號"], columns=sorted_subjects)
+    attendance_stats.insert(0, "姓名", students_df["姓名"].values)
+    attendance_stats.insert(0, "座號", students_df["座號"].values)
+    
+    attn_df = st.session_state["db_attendance"]
+    
+    if not attn_df.empty:
+        attn_df["日期"] = attn_df["日期"].astype(str)
+        dates_recorded = attn_df["日期"].unique()
+        for d_str in dates_recorded:
+            try:
+                d_str_formatted = d_str.replace("-", "/")
+                dt = datetime.strptime(d_str_formatted, "%Y/%m/%d")
+                weekday_num = dt.weekday()
+                if weekday_num < 5:
+                    weekday_name = days_of_week[weekday_num]
+                    today_subjects = daily_subject_counts.get(weekday_name, {})
+                    
+                    day_attn = attn_df[attn_df["日期"] == d_str]
+                    present_students = day_attn[day_attn["出席狀態"].str.strip() == "出席"]["座號"].astype(int).tolist()
+                    
+                    for sub, count in today_subjects.items():
+                        if sub in attendance_stats.columns:
+                            attendance_stats.loc[attendance_stats["座號"].isin(present_students), sub] += count
+            except Exception:
+                continue
+                
+    # 生成並輸出凍結首欄的 HTML 表格
+    if not attendance_stats.empty and len(attendance_stats.columns) > 2:
+        html_builder = ['<div class="frozen-table-container"><table class="frozen-table"><thead><tr>']
+        for col in attendance_stats.columns:
+            html_builder.append(f'<th>{col}</th>')
+        html_builder.append('</tr></thead><tbody>')
+        for _, row in attendance_stats.iterrows():
+            html_builder.append('<tr>')
+            for i, val in enumerate(row):
+                html_builder.append(f'<td>{val}</td>')
+            html_builder.append('</tr>')
+        html_builder.append('</tbody></table></div>')
+        
+        st.markdown("".join(html_builder), unsafe_allow_html=True)
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        csv_data = attendance_stats.to_csv(index=False).encode('utf-8-sig')
+        st.download_button("📥 下載此出席統計報表 (CSV格式)", data=csv_data, file_name="學生科目出席次數統計.csv", mime="text/csv")
+    else:
+        st.info("尚無課表科目或出缺席記錄可供計算。")
+
 # ==============================================================================
 # 功能 2：段考成績分析與趨勢
 # ==============================================================================
 elif menu == "📊 段考成績分析與趨勢":
     st.markdown('<div class="main-title">📊 段考成績分析與趨勢</div>', unsafe_allow_html=True)
-    st.info("此處段考分析功能已載入，保留您原本的良好邏輯。")
-    # 此處略過冗長呈現，實際執行時請保留您原版功能 2 的完整代碼
+    
+    scores_df = st.session_state["db_scores"]
+    if scores_df.empty:
+        st.warning("目前尚無成績資料。請檢查您的 Google 試算表「各次段考成績」分頁。")
+    else:
+        subjects = ["國文", "英文", "數學", "歷史", "地理", "公民"]
+        
+        for sub in subjects:
+            if sub in scores_df.columns:
+                scores_df[sub] = pd.to_numeric(scores_df[sub], errors='coerce')
+        
+        exam_categories = scores_df["考試類別"].unique()
+        selected_exam = st.selectbox("🎯 選擇分析的段考階段", exam_categories)
+        
+        exam_filtered = scores_df[scores_df["考試類別"] == selected_exam]
+        
+        st.markdown("---")
+        st.subheader(f"🏆 {selected_exam} 各科排名前 5 名")
+        
+        cols_leaderboard = st.columns(3)
+        for idx, sub in enumerate(subjects):
+            if sub in exam_filtered.columns:
+                col_target = cols_leaderboard[idx % 3]
+                with col_target:
+                    st.markdown(f'<div class="card-container">', unsafe_allow_html=True)
+                    st.markdown(f'<h4 style="color: #1E3A8A; margin-top:0;">📚 {sub}</h4>', unsafe_allow_html=True)
+                    
+                    sub_scores = exam_filtered.dropna(subset=[sub])
+                    top5 = sub_scores.sort_values(by=sub, ascending=False).head(5)
+                    
+                    rank_list = []
+                    for rank, (_, r) in enumerate(top5.iterrows(), 1):
+                        rank_list.append(f"**第{rank}名**: 座號{int(r['座號'])} {r['姓名']} ({r[sub]}分)")
+                    
+                    if not rank_list:
+                        st.markdown("<span style='color:gray;'>本次考試無該科成績</span>", unsafe_allow_html=True)
+                    else:
+                        st.markdown("<br>".join(rank_list), unsafe_allow_html=True)
+                    st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown("---")
+        st.subheader("📈 段考進步最多前 5 名 (總分進步幅度)")
+        
+        current_idx = list(exam_categories).index(selected_exam)
+        if current_idx == 0:
+            st.info("💡 目前選取的是第一次段考，尚無更早的成績可供比較「進步名次」。若要查看進步榜，請選取第二次或第三次段考。")
+        else:
+            prev_exam = exam_categories[current_idx - 1]
+            prev_filtered = scores_df[scores_df["考試類別"] == prev_exam]
+            
+            exam_filtered_with_total = exam_filtered.copy()
+            exam_filtered_with_total["總分"] = exam_filtered_with_total[subjects].sum(axis=1, min_count=1)
+            
+            prev_filtered_with_total = prev_filtered.copy()
+            prev_filtered_with_total["總分"] = prev_filtered_with_total[subjects].sum(axis=1, min_count=1)
+            
+            progress_df = pd.merge(
+                exam_filtered_with_total[["座號", "姓名", "總分"]],
+                prev_filtered_with_total[["座號", "總分"]],
+                on="座號",
+                suffixes=("_本次", "_上次")
+            )
+            progress_df["總分進步"] = progress_df["總分_本次"] - progress_df["總分_上次"]
+            
+            valid_progress = progress_df.dropna(subset=["總分進步"])
+            top_progress = valid_progress.sort_values(by="總分進步", ascending=False).head(5)
+            
+            if top_progress.empty:
+                st.warning("無足夠的前後段考資料比對進步情況。")
+            else:
+                col_p1, col_p2 = st.columns([1, 2])
+                with col_p1:
+                    st.markdown("##### 🏆 總分進步優異金榜")
+                    for rank, (_, r) in enumerate(top_progress.iterrows(), 1):
+                        st.markdown(f"**第 {rank} 名**：座號 {int(r['座號'])} **{r['姓名']}** (總分進步 +{round(r['總分進步'], 1)} 分)")
+                with col_p2:
+                    fig_progress = px.bar(
+                        top_progress, x="姓名", y="總分進步", 
+                        text_auto='.1f', title=f"相比於「{prev_exam}」，總分進步幅度圖",
+                        color="總分進步", color_continuous_scale="Viridis"
+                    )
+                    fig_progress.update_layout(yaxis_title="進步分數", xaxis_title="姓名")
+                    st.plotly_chart(fig_progress, use_container_width=True)
+
+        st.markdown("---")
+        st.subheader("📈 個人各科成績趨勢曲線圖")
+        
+        student_sel = st.selectbox(
+            "選擇要分析趨勢的學生",
+            [f"座號 {int(row['座號'])} - {row['姓名']}" for _, row in st.session_state["db_students"].iterrows()]
+        )
+        sel_id = int(student_sel.split(" ")[1])
+        
+        student_scores = scores_df[scores_df["座號"].astype(int) == sel_id]
+        
+        if not student_scores.empty:
+            melted_scores = student_scores.melt(
+                id_vars=["考試類別"], 
+                value_vars=[s for s in subjects if s in student_scores.columns],
+                var_name="科目", 
+                value_name="分數"
+            )
+            melted_scores = melted_scores.dropna(subset=["分數"])
+            
+            fig_trend = px.line(
+                melted_scores, 
+                x="考試類別", 
+                y="分數", 
+                color="科目", 
+                markers=True,
+                title=f"{student_sel.split(' - ')[1]} 的各科段考成績變化趨勢",
+                category_orders={"考試類別": list(exam_categories)}
+            )
+            fig_trend.update_layout(yaxis_range=[0, 100], yaxis_title="學科成績 (分)", xaxis_title="考試階段")
+            st.plotly_chart(fig_trend, use_container_width=True)
+        else:
+            st.warning("查無該學生的成績資料。")
 
 # ==============================================================================
 # 功能 3：班級貢獻度登記與統計 (核心優化重點)
@@ -400,19 +681,19 @@ elif menu == "🌟 班級貢獻度登記與統計":
             if col_name not in stats_df.columns:
                 stats_df[col_name] = 0
                 
-            # 更新分數
+            # 修正處：使用 .loc 取代 .at 以防範 pandas Mixed Type 錯誤
             idx = stats_df.index[stats_df["座號"] == sid].tolist()
             if idx:
                 i = idx[0]
-                val = pd.to_numeric(stats_df.at[i, col_name], errors='coerce')
-                stats_df.at[i, col_name] = (0 if pd.isna(val) else val) + pts
+                val = pd.to_numeric(stats_df.loc[i, col_name], errors='coerce')
+                stats_df.loc[i, col_name] = (0 if pd.isna(val) else val) + pts
                 
                 # 更新總計
                 if "加扣分總計" in stats_df.columns:
-                    tot = pd.to_numeric(stats_df.at[i, "加扣分總計"], errors='coerce')
-                    stats_df.at[i, "加扣分總計"] = (0 if pd.isna(tot) else tot) + pts
+                    tot = pd.to_numeric(stats_df.loc[i, "加扣分總計"], errors='coerce')
+                    stats_df.loc[i, "加扣分總計"] = (0 if pd.isna(tot) else tot) + pts
                 else:
-                    stats_df.at[i, "加扣分總計"] = pts
+                    stats_df.loc[i, "加扣分總計"] = pts
                     
         st.session_state["db_contribution_stats"] = stats_df
         

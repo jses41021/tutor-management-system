@@ -11,10 +11,10 @@ import json
 # 🎯 系統核心設定（請將您的 Google 試算表與 GAS 網址直接填寫於此）
 # ==============================================================================
 # 1. 您的 Google 試算表網址（請確保已設定為「知道連結的使用者皆可檢視」）
-GS_URL = "https://docs.google.com/spreadsheets/d/145ce3_placeholder_or_your_real_id/edit"
+GS_URL = "https://docs.google.com/spreadsheets/d/1GLwY651HJBEDzUXDWmDONPp1j4Sj2J9Lw_ZNe8lqSEQ/edit?gid=0#gid=0"
 
 # 2. 您的 Google Apps Script 部署網址（部署為網頁應用程式產生的 https://script.google.com.../exec 網址）
-GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfy_placeholder/exec"
+GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbxrHWClyYOu2RstCAWWA5CRIkR8_Wlqr7yWSwNo5fBnOibdDEo6lnEvf3U0dntysUVc/exec"
 
 # ==============================================================================
 # 頁面配置與主題

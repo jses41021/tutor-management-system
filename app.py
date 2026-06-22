@@ -6,12 +6,13 @@ from datetime import datetime
 import urllib.parse
 import requests
 import json
+import re
 
 # ==============================================================================
 # 🎯 系統核心設定（請將您的 Google 試算表與 GAS 網址直接填寫於此）
 # ==============================================================================
 # 1. 您的 Google 試算表網址（請確保已設定為「知道連結的使用者皆可檢視」）
-GS_URL = "https://docs.google.com/spreadsheets/d/1GLwY651HJBEDzUXDWmDONPp1j4Sj2J9Lw_ZNe8lqSEQ/edit?gid=0#gid=0"
+GS_URL = "https://docs.google.com/spreadsheets/d/1GLwY651HJBEDzUXDWmDONPp1j4Sj2J9Lw_ZNe8lqSEQ/edit?gid=447799608#gid=447799608"
 
 # 2. 您的 Google Apps Script 部署網址（部署為網頁應用程式產生的 https://script.google.com.../exec 網址）
 GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbxrHWClyYOu2RstCAWWA5CRIkR8_Wlqr7yWSwNo5fBnOibdDEo6lnEvf3U0dntysUVc/exec"
@@ -246,7 +247,7 @@ if "db_timetable" not in st.session_state:
         {"學期": "三上", "節次": "第一節", "星期一": "英文", "星期二": "數學", "星期三": "物理", "星期四": "國文", "星期五": "化學"},
         {"學期": "三上", "節次": "第二節", "星期一": "英文", "星期二": "歷史", "星期三": "物理", "星期四": "國文", "星期五": "化學"},
         {"學期": "三上", "節次": "第三節", "星期一": "國文", "星期二": "體育", "星期三": "地科", "星期四": "英文", "星期五": "數學"},
-        {"學期": "三上", "節次": "第四節", "星期一": "數學", "星期二": "公民", "星期三": "地科", "星期四": "音樂", "星期五": "數學"},
+        {"學期": "三上", "節次": "第四節", "星期一": "數學", "星期2": "公民", "星期三": "地科", "星期四": "音樂", "星期五": "數學"},
         {"學期": "三上", "節次": "第五節", "星期一": "體育", "星期二": "自主學習", "星期三": "數學", "星期四": "國文", "星期五": "班週會/社團"},
         {"學期": "三上", "節次": "第六節", "星期一": "化學", "星期二": "彈性學習", "星期三": "國文", "星期四": "物理", "星期五": "班週會/社團"},
         {"學期": "三上", "節次": "第七節", "星期一": "化學", "星期二": "班會", "星期三": "英文", "星期四": "物理", "星期五": "班週會/社團"},
@@ -286,6 +287,27 @@ if spreadsheet_id and "db_loaded" not in st.session_state:
     st.session_state["db_scores"] = load_sheet_csv(spreadsheet_id, "各次段考成績", st.session_state["db_scores"])
     st.session_state["db_contribution_history"] = load_sheet_csv(spreadsheet_id, "班級貢獻度歷史紀錄", st.session_state["db_contribution_history"])
     st.session_state["db_loaded"] = True
+
+# ==============================================================================
+# 🛡️ 欄位防護與防 Key-Error 機制（重要：徹底防範欄位不存在的崩潰問題）
+# ==============================================================================
+for df_key, required_cols in {
+    "db_students": ["座號", "姓名"],
+    "db_attendance": ["日期", "座號", "姓名", "出席狀態"],
+    "db_scores": ["考試類別", "座號", "姓名", "國文", "英文", "數學", "歷史", "地理", "公民"],
+    "db_contribution_history": ["日期", "座號", "姓名", "事由", "加扣分點數"]
+}.items():
+    if df_key in st.session_state:
+        df = st.session_state[df_key]
+        for col in required_cols:
+            if col not in df.columns:
+                if col == "加扣分點數":
+                    df[col] = 0
+                elif col in ["座號"]:
+                    df[col] = 1
+                else:
+                    df[col] = ""
+        st.session_state[df_key] = df
 
 with st.sidebar:
     st.image("https://img.icons8.com/color/96/000000/google-sheets.png", width=55)
@@ -568,58 +590,148 @@ elif menu == "🌟 班級貢獻度登記與統計":
     st.markdown('<div class="main-title">🌟 班級貢獻度登記與統計</div>', unsafe_allow_html=True)
     
     st.subheader("📥 批次學生加扣分登記")
-    st.caption("💡 方便快速！例如在朝會、整潔活動或各項競賽中，可一次選取多名同學進行相同項目之加扣分。")
+    st.caption("💡 提供「選單點選」與「快速文字貼上」兩種便利登記方式，請選擇最符合幹部現狀的模式：")
     
-    col_input1, col_input2 = st.columns(2)
-    with col_input1:
-        contri_date = st.date_input("加扣分日期", datetime.today(), key="contri_date")
-        contri_event = st.text_input("事由描述", placeholder="例如：朝會缺席、整潔工作認真、課堂發表積極...")
-        
-    with col_input2:
-        contri_type = st.radio("加分或扣分", ["加分 (+1)", "扣分 (-1)"], horizontal=True)
-        students_df = st.session_state["db_students"]
-        student_list_for_sel = [f"座號 {int(row['座號'])} - {row['姓名']}" for _, row in students_df.iterrows()]
-        selected_students_contri = st.multiselect("選擇加扣分的學生名單", student_list_for_sel)
-        
-    hist_df = st.session_state["db_contribution_history"]
+    # 建立輸入模式頁籤
+    tab_click, tab_text = st.tabs(["✨ 圖形化選單登記", "✍️ 快速文字貼上登記"])
     
-    if not hist_df.empty:
-        all_events = sorted(hist_df["事由"].astype(str).unique())
-        all_events = [e for e in all_events if e.strip() != ""]
-    else:
-        all_events = []
-        
-    stats_cols = ["座號", "姓名"] + all_events + ["加扣分總計"]
-    contribution_stats_df = pd.DataFrame(0, index=students_df["座號"], columns=stats_cols)
-    contribution_stats_df["座號"] = students_df["座號"].values
-    contribution_stats_df["姓名"] = students_df["姓名"].values
+    students_df = st.session_state["db_students"]
     
-    if st.button("🚀 批次儲存至「班級貢獻度歷史紀錄」"):
-        if not contri_event:
-            st.error("請填寫事由描述！")
-        elif not selected_students_contri:
-            st.error("請至少選擇一位同學！")
-        else:
-            score_change = 1 if "加分" in contri_type else -1
+    # 宣告空變數，用於兩種輸入方式整合
+    final_date_str = ""
+    final_event = ""
+    final_score_change = 0
+    final_selected_seats = []
+    should_save = False
+    
+    # --- 模式 A：選單式點選 ---
+    with tab_click:
+        col_input1, col_input2 = st.columns(2)
+        with col_input1:
+            contri_date = st.date_input("加扣分日期", datetime.today(), key="contri_date_click")
+            contri_event = st.text_input("事由描述", placeholder="例如：整潔工作認真、課堂發表積極...", key="contri_event_click")
             
-            new_history_records = []
-            gas_history_records = []
-            for student_item in selected_students_contri:
-                sid = int(student_item.split(" ")[1])
-                sname = student_item.split(" - ")[1]
+        with col_input2:
+            contri_type = st.radio("加分或扣分", ["加分 (+1)", "扣分 (-1)"], horizontal=True, key="contri_type_click")
+            student_list_for_sel = [f"座號 {int(row['座號'])} - {row['姓名']}" for _, row in students_df.iterrows()]
+            selected_students_contri = st.multiselect("選擇加扣分的學生名單", student_list_for_sel, key="selected_click")
+            
+        if st.button("🚀 送出選單登記", key="btn_click"):
+            if not contri_event:
+                st.error("請填寫事由描述！")
+            elif not selected_students_contri:
+                st.error("請至少選擇一位同學！")
+            else:
+                final_date_str = contri_date.strftime("%Y/%m/%d")
+                final_event = contri_event
+                final_score_change = 1 if "加分" in contri_type else -1
+                final_selected_seats = [int(item.split(" ")[1]) for item in selected_students_contri]
+                should_save = True
+
+    # --- 模式 B：文字區貼上式 ---
+    with tab_text:
+        st.markdown("""
+        **📝 格式語法說明**（請直接將名單與事由複製貼到下方框中，支援全/半形冒號及各式間隔號）：
+        ```text
+        日期:2026/6/22
+        事由:朝會缺席
+        加扣分:-1
+        名單:1、2、3、4、5
+        ```
+        """)
+        
+        default_paste_template = "日期:2026/6/22\n事由:朝會缺席\n加扣分:-1\n名單:1、2、3、4、5"
+        paste_area = st.text_area("請在此貼上幹部紀錄文字：", value=default_paste_template, height=180)
+        
+        # 智慧型解析機制
+        parsed_data = {}
+        if paste_area:
+            lines = paste_area.strip().split('\n')
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                # 支援全形冒號 ： 與半形冒號 :
+                match = re.match(r'^([^:：]+)[:：](.*)$', line)
+                if match:
+                    key = match.group(1).strip()
+                    val = match.group(2).strip()
+                    parsed_data[key] = val
+        
+        # 提取與轉換欄位
+        p_date = parsed_data.get("日期", datetime.today().strftime("%Y/%m/%d"))
+        p_event = parsed_data.get("事由", "")
+        p_points_raw = parsed_data.get("加扣分", "1")
+        p_names_raw = parsed_data.get("名單", "")
+        
+        # 解析分數
+        try:
+            p_points = int(re.search(r'[-+]?\d+', p_points_raw).group())
+        except Exception:
+            p_points = 1 if "加" in p_points_raw or "-" not in p_points_raw else -1
+            
+        # 解析座號
+        p_seats = []
+        if p_names_raw:
+            # 支援各種常見中英文分隔號
+            parts = re.split(r'[、，,\s;；]+', p_names_raw)
+            for part in parts:
+                part = part.strip()
+                if part.isdigit():
+                    p_seats.append(int(part))
+        
+        # 秀出即時解析預覽卡片
+        st.markdown("##### 🔍 即時解析預覽 (儲存前請核對)")
+        col_p1, col_p2, col_p3 = st.columns(3)
+        with col_p1:
+            st.metric("點名日期", p_date)
+        with col_p2:
+            st.metric("加扣事由", p_event if p_event else "(請輸入事由)")
+        with col_p3:
+            st.metric("加扣分點數", f"{p_points} 分")
+            
+        # 根據座號配對姓名
+        matched_students = students_df[students_df["座號"].isin(p_seats)]
+        matched_names = matched_students["姓名"].tolist()
+        matched_details = [f"座號 {int(r['座號'])} - {r['姓名']}" for _, r in matched_students.iterrows()]
+        
+        st.markdown(f"**🎯 匹配到的同學 ({len(matched_details)}人) :** \n" + ("，".join(matched_details) if matched_details else "⚠️ 尚未匹配到任何座號學生，請檢查最後一行是否正確輸入"))
+        
+        if st.button("🚀 送出文字貼上登記", key="btn_text"):
+            if not p_event:
+                st.error("❌ 儲存失敗！無法解析到「事由」描述。")
+            elif not p_seats:
+                st.error("❌ 儲存失敗！「名單」中無有效學生座號。")
+            else:
+                final_date_str = p_date
+                final_event = p_event
+                final_score_change = p_points
+                final_selected_seats = p_seats
+                should_save = True
+
+    # 執行儲存更新與上傳
+    if should_save:
+        new_history_records = []
+        gas_history_records = []
+        
+        for seat_id in final_selected_seats:
+            student_row = students_df[students_df["座號"] == seat_id]
+            if not student_row.empty:
+                sname = student_row.iloc[0]["姓名"]
                 new_history_records.append({
-                    "日期": contri_date.strftime("%Y/%m/%d"),
-                    "座號": sid,
+                    "日期": final_date_str,
+                    "座號": seat_id,
                     "姓名": sname,
-                    "事由": contri_event,
-                    "加扣分點數": score_change
+                    "事由": final_event,
+                    "加扣分點數": final_score_change
                 })
-                gas_history_records.append([contri_date.strftime("%Y/%m/%d"), sid, sname, contri_event, score_change])
-            
+                gas_history_records.append([final_date_str, seat_id, sname, final_event, final_score_change])
+        
+        if new_history_records:
             new_hist_df = pd.DataFrame(new_history_records)
             st.session_state["db_contribution_history"] = pd.concat([st.session_state["db_contribution_history"], new_hist_df], ignore_index=True)
             
-            # 即時計算統計矩陣準備上傳
+            # 即時計算並更新統計表矩陣
             updated_hist = st.session_state["db_contribution_history"]
             updated_events = sorted(updated_hist["事由"].astype(str).unique())
             updated_events = [e for e in updated_events if e.strip() != ""]
@@ -649,6 +761,8 @@ elif menu == "🌟 班級貢獻度登記與統計":
             success = write_data_via_apps_script(GAS_WEB_APP_URL, payload)
             if not success:
                 st.info("💡 資料目前儲存於網頁暫存中。請確保 app.py 最上方的 GAS_WEB_APP_URL 填寫正確。")
+            else:
+                st.rerun()
 
     # --------------------------------------------------------------------------
     # 即時呈現統計：班級貢獻度累計統計表

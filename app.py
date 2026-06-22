@@ -8,6 +8,15 @@ import requests
 import json
 
 # ==============================================================================
+# 🎯 系統核心設定（請將您的 Google 試算表與 GAS 網址直接填寫於此）
+# ==============================================================================
+# 1. 您的 Google 試算表網址（請確保已設定為「知道連結的使用者皆可檢視」）
+GS_URL = "https://docs.google.com/spreadsheets/d/145ce3_placeholder_or_your_real_id/edit"
+
+# 2. 您的 Google Apps Script 部署網址（部署為網頁應用程式產生的 https://script.google.com.../exec 網址）
+GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfy_placeholder/exec"
+
+# ==============================================================================
 # 頁面配置與主題
 # ==============================================================================
 st.set_page_config(
@@ -106,10 +115,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==============================================================================
-# Google Sheet 免 API 讀寫核心邏輯
+# Google Sheet 免 API 讀寫核心邏輯 (支援智慧型課表解析)
 # ==============================================================================
 def get_spreadsheet_id(url_or_id):
-    """從使用者輸入的 URL 或 ID 中，解析出 Spreadsheet ID"""
+    """從 URL 或 ID 中解析出 Spreadsheet ID"""
     if "docs.google.com/spreadsheets" in url_or_id:
         try:
             parts = url_or_id.split("/d/")
@@ -119,30 +128,79 @@ def get_spreadsheet_id(url_or_id):
             pass
     return url_or_id.strip()
 
+def parse_raw_timetable(raw_df):
+    """
+    智慧型課表解析器：依據 Google 試算表視覺化排版 (如 image_145ce3.png)
+    自動偵測「二下」、「三上」、「三下」等標記，並解析對應的星期課程。
+    """
+    cleaned_rows = []
+    current_semester = None
+    days_of_week = ["星期一", "星期二", "星期三", "星期四", "星期五"]
+    
+    for idx, row in raw_df.iterrows():
+        # A欄 (索引 0)：檢查是否為學期分界點 (例如: "二下", "三上", "三下")
+        val_a = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
+        if val_a in ["二下", "三上", "三下", "二上", "一下", "一上"]:
+            current_semester = val_a
+            continue
+            
+        # B欄 (索引 1)：檢查是否為節次 (如 "朝會", "第一節" ~ "第七節")
+        val_b = str(row.iloc[1]).strip() if len(row) > 1 and pd.notna(row.iloc[1]) else ""
+        if current_semester and val_b and val_b != "nan" and val_b != "":
+            # 提取 C ~ G 欄的課程 (索引 2 至 6)
+            day_courses = []
+            for col_idx in range(2, 7):
+                if len(row) > col_idx and pd.notna(row.iloc[col_idx]):
+                    day_courses.append(str(row.iloc[col_idx]).strip())
+                else:
+                    day_courses.append("")
+            
+            cleaned_rows.append({
+                "學期": current_semester,
+                "節次": val_b,
+                "星期一": day_courses[0],
+                "星期二": day_courses[1],
+                "星期三": day_courses[2],
+                "星期四": day_courses[3],
+                "星期五": day_courses[4]
+            })
+            
+    if cleaned_rows:
+        return pd.DataFrame(cleaned_rows)
+    return None
+
 def load_sheet_csv(spreadsheet_id, sheet_name, fallback_df):
     """透過 gviz URL 免 API 直接讀取公開試算表特定的分頁為 DataFrame"""
     if not spreadsheet_id:
         return fallback_df
     try:
         encoded_name = urllib.parse.quote(sheet_name)
+        
+        # 針對「課表」分頁，使用不帶 Header 的方式讀取以利智慧型解析
+        if sheet_name == "課表":
+            url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/gviz/tq?tqx=out:csv&sheet={encoded_name}"
+            raw_df = pd.read_csv(url, header=None, keep_default_na=False)
+            parsed_df = parse_raw_timetable(raw_df)
+            if parsed_df is not None:
+                return parsed_df
+            return fallback_df
+            
+        # 其他一般分頁正常讀取
         url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/gviz/tq?tqx=out:csv&sheet={encoded_name}"
-        # 設定 timeout 防止加載過久
         df = pd.read_csv(url, keep_default_na=False)
-        # 清除完全空白的欄或列
         df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
         return df
     except Exception as e:
-        st.sidebar.warning(f"無法讀取分頁「{sheet_name}」：{e}。系統將自動採用預設範例資料運作。")
+        st.sidebar.warning(f"無法讀取分頁「{sheet_name}」：{e}。系統採用暫存資料。")
         return fallback_df
 
 def write_data_via_apps_script(web_app_url, payload):
     """利用 POST 請求與 Google Apps Script 溝通寫入資料"""
-    if not web_app_url:
-        st.warning("⚠️ 尚未設定 Google Apps Script Web App URL，資料目前僅保留於網頁記憶體中（重新整理後會消失）。")
+    if not web_app_url or "placeholder" in web_app_url:
+        st.warning("⚠️ 尚未設定真實的 Apps Script URL，資料目前僅保留於網頁記憶體中（重新整理後會消失）。")
         return False
     try:
         with st.spinner("🚀 正在即時將異動同步寫入 Google 試算表分頁..."):
-            # 發送 POST 請求
             headers = {"Content-Type": "application/json"}
             response = requests.post(web_app_url, data=json.dumps(payload), headers=headers, timeout=15)
             if response.status_code == 200:
@@ -157,13 +215,13 @@ def write_data_via_apps_script(web_app_url, payload):
                     st.success("🎉 資料已送出，Google Apps Script 已處理回應。")
                     return True
             else:
-                st.error(f"❌ 無法連線至 Google Apps Script Web App，請檢查網址與部署權限設定 (狀態碼: {response.status_code})")
+                st.error(f"❌ 無法連線至 Google Apps Script Web App (狀態碼: {response.status_code})")
     except Exception as e:
         st.error(f"❌ 傳輸發生異常：{e}")
     return False
 
 # ==============================================================================
-# 本機預設備份資料庫（當未連線時或讀取失敗時的自動 Fallback 範例資料）
+# 本機預設備份資料庫 (當未填寫網址時自動載入的預設數據)
 # ==============================================================================
 if "db_students" not in st.session_state:
     st.session_state["db_students"] = pd.DataFrame({
@@ -179,17 +237,17 @@ if "db_timetable" not in st.session_state:
         # 二下課表
         {"學期": "二下", "節次": "第一節", "星期一": "數學", "星期二": "體育", "星期三": "國防", "星期四": "數學", "星期五": "社會探究"},
         {"學期": "二下", "節次": "第二節", "星期一": "歷史", "星期二": "新高學", "星期三": "國文", "星期四": "數學", "星期五": "社會探究"},
-        {"學期": "二下", "節次": "第三節", "星期一": "國文", "星期二": "新高學", "星期三": "公民", "星期四": "英文", "星期五": "社會探究"},
+        {"學期": "二下", "節次": "第三節", "星期一": "國文", "星期2": "新高學", "星期三": "公民", "星期四": "英文", "星期五": "社會探究"},
         {"學期": "二下", "節次": "第四節", "星期一": "歷史", "星期二": "英文", "星期三": "體育", "星期四": "新媒體藝術", "星期五": "工程設計專題"},
         {"學期": "二下", "節次": "第五節", "星期一": "地科探究", "星期二": "科技應用專題", "星期三": "國文", "星期四": "國文", "星期五": "班週會/社團"},
         {"學期": "二下", "節次": "第六節", "星期一": "地科探究", "星期二": "數學", "星期三": "英文", "星期四": "自主學習", "星期五": "班週會/社團"},
         {"學期": "二下", "節次": "第七節", "星期一": "創新生活與家庭", "星期二": "公民", "星期三": "英文", "星期四": "彈性學習", "星期五": "班週會/社團"},
-        # 三上課表 (欄位佔位)
+        # 三上課表
         {"學期": "三上", "節次": "第一節", "星期一": "英文", "星期二": "數學", "星期三": "物理", "星期四": "國文", "星期五": "化學"},
         {"學期": "三上", "節次": "第二節", "星期一": "英文", "星期二": "歷史", "星期三": "物理", "星期四": "國文", "星期五": "化學"},
         {"學期": "三上", "節次": "第三節", "星期一": "國文", "星期二": "體育", "星期三": "地科", "星期四": "英文", "星期五": "數學"},
         {"學期": "三上", "節次": "第四節", "星期一": "數學", "星期二": "公民", "星期三": "地科", "星期四": "音樂", "星期五": "數學"},
-        {"學期": "三上", "節次": "第五節", "星期一": "體育", "星期2": "自主學習", "星期三": "數學", "星期四": "國文", "星期五": "班週會/社團"},
+        {"學期": "三上", "節次": "第五節", "星期一": "體育", "星期二": "自主學習", "星期三": "數學", "星期四": "國文", "星期五": "班週會/社團"},
         {"學期": "三上", "節次": "第六節", "星期一": "化學", "星期二": "彈性學習", "星期三": "國文", "星期四": "物理", "星期五": "班週會/社團"},
         {"學期": "三上", "節次": "第七節", "星期一": "化學", "星期二": "班會", "星期三": "英文", "星期四": "物理", "星期五": "班週會/社團"},
     ])
@@ -216,45 +274,35 @@ if "db_contribution_history" not in st.session_state:
     st.session_state["db_contribution_history"] = pd.DataFrame(columns=["日期", "座號", "姓名", "事由", "加扣分點數"])
 
 # ==============================================================================
-# 側邊欄：連結設定與功能選單
+# 側邊欄與資料自動同步邏輯 (已完美隱藏網址輸入欄)
 # ==============================================================================
+spreadsheet_id = get_spreadsheet_id(GS_URL) if GS_URL and "placeholder" not in GS_URL else ""
+
+# 自動讀取試算表資料
+if spreadsheet_id and "db_loaded" not in st.session_state:
+    st.session_state["db_students"] = load_sheet_csv(spreadsheet_id, "導班學生名單", st.session_state["db_students"])
+    st.session_state["db_timetable"] = load_sheet_csv(spreadsheet_id, "課表", st.session_state["db_timetable"])
+    st.session_state["db_attendance"] = load_sheet_csv(spreadsheet_id, "出缺席紀錄", st.session_state["db_attendance"])
+    st.session_state["db_scores"] = load_sheet_csv(spreadsheet_id, "各次段考成績", st.session_state["db_scores"])
+    st.session_state["db_contribution_history"] = load_sheet_csv(spreadsheet_id, "班級貢獻度歷史紀錄", st.session_state["db_contribution_history"])
+    st.session_state["db_loaded"] = True
+
 with st.sidebar:
     st.image("https://img.icons8.com/color/96/000000/google-sheets.png", width=55)
-    st.title("🔌 試算表免 API 連線設定")
+    st.title("🎓 導師班級經營系統")
     
-    # 讓老師輸入 Google 試算表的網址或 ID
-    sheet_input = st.text_input(
-        "1. Google Sheet 網址或 ID",
-        placeholder="https://docs.google.com/spreadsheets/d/...",
-        help="請確保您的 Google Sheet 共用權限設定為「知道連結的人均可檢視」！"
-    )
-    spreadsheet_id = get_spreadsheet_id(sheet_input) if sheet_input else ""
-    
-    # 讓老師輸入 Apps Script 網頁應用程式網址
-    gas_web_app_url = st.text_input(
-        "2. Apps Script 部署網址 (用於儲存資料)",
-        placeholder="https://script.google.com/macros/s/.../exec",
-        help="請貼上您在試算表中部署 Google Apps Script 後產生的 Web App 網址。"
-    )
-    
-    st.markdown("---")
-    
-    # 動態加載最新資料（如已設定 Spreadsheet ID）
+    # 顯示連線成功提示
     if spreadsheet_id:
-        with st.spinner("🔄 正在從 Google Sheet 同步讀取最新分頁資料..."):
-            st.session_state["db_students"] = load_sheet_csv(spreadsheet_id, "導班學生名單", st.session_state["db_students"])
-            st.session_state["db_timetable"] = load_sheet_csv(spreadsheet_id, "課表", st.session_state["db_timetable"])
-            st.session_state["db_attendance"] = load_sheet_csv(spreadsheet_id, "出缺席紀錄", st.session_state["db_attendance"])
-            st.session_state["db_scores"] = load_sheet_csv(spreadsheet_id, "各次段考成績", st.session_state["db_scores"])
-            st.session_state["db_contribution_history"] = load_sheet_csv(spreadsheet_id, "班級貢獻度歷史紀錄", st.session_state["db_contribution_history"])
-        st.success("⚡ 雲端資料同步讀取成功！")
+        st.success("⚡ 雲端試算表已自動讀取成功！")
+    else:
+        st.warning("⚠️ 系統目前正以本機暫存模式運作。請至程式碼 app.py 最上方填入您的試算表與 GAS 網址！")
         
     menu = st.radio(
         "功能導覽",
         ["📅 課表與出缺席即時管理", "📊 段考成績分析與趨勢", "🌟 班級貢獻度登記與統計"]
     )
 
-# 確保座號型態正確
+# 確保座號欄位格式正確
 try:
     st.session_state["db_students"]["座號"] = st.session_state["db_students"]["座號"].astype(int)
 except Exception:
@@ -273,7 +321,6 @@ if menu == "📅 課表與出缺席即時管理":
         today_date = st.date_input("點名日期", datetime.today())
         
     with st.expander("🔍 檢視本學期課表科目"):
-        # 從雲端獲取最新課表
         timetable_df = st.session_state["db_timetable"]
         sem_timetable = timetable_df[timetable_df["學期"].astype(str) == selected_semester]
         st.dataframe(sem_timetable, use_container_width=True)
@@ -285,8 +332,6 @@ if menu == "📅 課表與出缺席即時管理":
     st.caption("💡 系統預設全員出席。若有缺席同學，請在下方勾選（支援多選、快速登記）：")
     
     students_df = st.session_state["db_students"]
-    
-    # 建立多選選單
     student_options = [f"座號 {int(row['座號'])} - {row['姓名']}" for _, row in students_df.iterrows()]
     absent_selections = st.multiselect("請選擇今日缺席的學生", student_options)
     
@@ -295,7 +340,7 @@ if menu == "📅 課表與出缺席即時管理":
         
         # 準備寫入本機暫存與雲端紀錄
         new_records = []
-        gas_records = [] # 要傳給 GAS 的資料格式 [日期, 座號, 姓名, 出席狀態]
+        gas_records = []
         for _, row in students_df.iterrows():
             status = "缺席" if int(row["座號"]) in absent_ids else "出席"
             new_records.append({
@@ -308,7 +353,6 @@ if menu == "📅 課表與出缺席即時管理":
         
         new_df = pd.DataFrame(new_records)
         
-        # 避免重複日期寫入，先刪除舊有同日期的本機數據
         orig_attendance = st.session_state["db_attendance"]
         if not orig_attendance.empty:
             orig_attendance = orig_attendance[orig_attendance["日期"].astype(str) != today_date.strftime("%Y/%m/%d")]
@@ -322,12 +366,12 @@ if menu == "📅 課表與出缺席即時管理":
             "records": gas_records
         }
         
-        success = write_data_via_apps_script(gas_web_app_url, payload)
+        success = write_data_via_apps_script(GAS_WEB_APP_URL, payload)
         if not success:
-            st.info("💡 目前已先幫您將這筆記錄儲存在網頁本機暫存中。若要永久保存，請記得依據說明設定 Apps Script URL。")
+            st.info("💡 資料目前儲存於網頁暫存中。請確保 app.py 最上方的 GAS_WEB_APP_URL 填寫正確。")
 
     # --------------------------------------------------------------------------
-    # 即時計算與呈現：學生各科目出席次數 (核心演算法)
+    # 即時計算與呈現：學生各科目出席次數
     # --------------------------------------------------------------------------
     st.markdown("---")
     st.subheader("📊 每位學生各科目「實際出席次數」累計表 (含首欄凍結窗格)")
@@ -359,12 +403,10 @@ if menu == "📅 課表與出缺席即時管理":
     attn_df = st.session_state["db_attendance"]
     
     if not attn_df.empty:
-        # 轉換日期格式統一，避免比對錯誤
         attn_df["日期"] = attn_df["日期"].astype(str)
         dates_recorded = attn_df["日期"].unique()
         for d_str in dates_recorded:
             try:
-                # 相容 YYYY/MM/DD 或 YYYY-MM-DD
                 d_str_formatted = d_str.replace("-", "/")
                 dt = datetime.strptime(d_str_formatted, "%Y/%m/%d")
                 weekday_num = dt.weekday()
@@ -372,14 +414,13 @@ if menu == "📅 課表與出缺席即時管理":
                     weekday_name = days_of_week[weekday_num]
                     today_subjects = daily_subject_counts.get(weekday_name, {})
                     
-                    # 篩選當日出席的同學
                     day_attn = attn_df[attn_df["日期"] == d_str]
                     present_students = day_attn[day_attn["出席狀態"].str.strip() == "出席"]["座號"].astype(int).tolist()
                     
                     for sub, count in today_subjects.items():
                         if sub in attendance_stats.columns:
                             attendance_stats.loc[attendance_stats["座號"].isin(present_students), sub] += count
-            except Exception as e:
+            except Exception:
                 continue
                 
     # 生成並輸出凍結首欄的 HTML 表格
@@ -409,7 +450,6 @@ elif menu == "📊 段考成績分析與趨勢":
     scores_df = st.session_state["db_scores"]
     subjects = ["國文", "英文", "數學", "歷史", "地理", "公民"]
     
-    # 確保分數類型為浮點數或整數
     for sub in subjects:
         if sub in scores_df.columns:
             scores_df[sub] = pd.to_numeric(scores_df[sub], errors='coerce')
@@ -430,7 +470,6 @@ elif menu == "📊 段考成績分析與趨勢":
                 st.markdown(f'<div class="card-container">', unsafe_allow_html=True)
                 st.markdown(f'<h4 style="color: #1E3A8A; margin-top:0;">📚 {sub}</h4>', unsafe_allow_html=True)
                 
-                # 過濾並排序
                 sub_scores = exam_filtered.dropna(subset=[sub])
                 top5 = sub_scores.sort_values(by=sub, ascending=False).head(5)
                 
@@ -444,7 +483,6 @@ elif menu == "📊 段考成績分析與趨勢":
                     st.markdown("<br>".join(rank_list), unsafe_allow_html=True)
                 st.markdown('</div>', unsafe_allow_html=True)
 
-    # 進步最多前 5 名
     st.markdown("---")
     st.subheader("📈 段考進步最多前 5 名 (總分進步幅度)")
     
@@ -455,7 +493,6 @@ elif menu == "📊 段考成績分析與趨勢":
         prev_exam = exam_categories[current_idx - 1]
         prev_filtered = scores_df[scores_df["考試類別"] == prev_exam]
         
-        # 計算總分
         exam_filtered_with_total = exam_filtered.copy()
         exam_filtered_with_total["總分"] = exam_filtered_with_total[subjects].sum(axis=1, min_count=1)
         
@@ -470,7 +507,6 @@ elif menu == "📊 段考成績分析與趨勢":
         )
         progress_df["總分進步"] = progress_df["總分_本次"] - progress_df["總分_上次"]
         
-        # 移除 NaN 值並排序前 5 名
         valid_progress = progress_df.dropna(subset=["總分進步"])
         top_progress = valid_progress.sort_values(by="總分進步", ascending=False).head(5)
         
@@ -491,7 +527,6 @@ elif menu == "📊 段考成績分析與趨勢":
                 fig_progress.update_layout(yaxis_title="進步分數", xaxis_title="姓名")
                 st.plotly_chart(fig_progress, use_container_width=True)
 
-    # 個人成績趨勢曲線
     st.markdown("---")
     st.subheader("📈 個人各科成績趨勢曲線圖")
     
@@ -510,7 +545,6 @@ elif menu == "📊 段考成績分析與趨勢":
             var_name="科目", 
             value_name="分數"
         )
-        # 過濾空分數 (代表缺考或無成績)
         melted_scores = melted_scores.dropna(subset=["分數"])
         
         fig_trend = px.line(
@@ -549,10 +583,8 @@ elif menu == "🌟 班級貢獻度登記與統計":
         
     hist_df = st.session_state["db_contribution_history"]
     
-    # 宣告暫存統計變數以利即時計算與傳送
     if not hist_df.empty:
         all_events = sorted(hist_df["事由"].astype(str).unique())
-        # 過濾空字串
         all_events = [e for e in all_events if e.strip() != ""]
     else:
         all_events = []
@@ -571,7 +603,7 @@ elif menu == "🌟 班級貢獻度登記與統計":
             score_change = 1 if "加分" in contri_type else -1
             
             new_history_records = []
-            gas_history_records = [] # 要傳給 GAS 的歷史明細 [[日期, 座號, 姓名, 事由, 加扣分點數], ...]
+            gas_history_records = []
             for student_item in selected_students_contri:
                 sid = int(student_item.split(" ")[1])
                 sname = student_item.split(" - ")[1]
@@ -587,7 +619,7 @@ elif menu == "🌟 班級貢獻度登記與統計":
             new_hist_df = pd.DataFrame(new_history_records)
             st.session_state["db_contribution_history"] = pd.concat([st.session_state["db_contribution_history"], new_hist_df], ignore_index=True)
             
-            # 即時重新計算這一次新增後的完整「統計表格」，並轉成二維矩陣傳給 GAS 覆寫
+            # 即時計算統計矩陣準備上傳
             updated_hist = st.session_state["db_contribution_history"]
             updated_events = sorted(updated_hist["事由"].astype(str).unique())
             updated_events = [e for e in updated_events if e.strip() != ""]
@@ -606,7 +638,6 @@ elif menu == "🌟 班級貢獻度登記與統計":
                         temp_stats_df.loc[sid_val, event_val] += pts_val
                     temp_stats_df.loc[sid_val, "加扣分總計"] += pts_val
             
-            # 將統計 DataFrame 轉為二維 Array，準備推送
             stats_matrix = [temp_stats_df.columns.tolist()] + temp_stats_df.values.tolist()
             
             payload = {
@@ -615,18 +646,17 @@ elif menu == "🌟 班級貢獻度登記與統計":
                 "statsMatrix": stats_matrix
             }
             
-            success = write_data_via_apps_script(gas_web_app_url, payload)
+            success = write_data_via_apps_script(GAS_WEB_APP_URL, payload)
             if not success:
-                st.info("💡 資料已先暫存於本機。若需保存至 Google Sheets 試算表，請串接您的 Google Apps Script。")
+                st.info("💡 資料目前儲存於網頁暫存中。請確保 app.py 最上方的 GAS_WEB_APP_URL 填寫正確。")
 
     # --------------------------------------------------------------------------
-    # 即時計算統計：班級貢獻度累計統計表
+    # 即時呈現統計：班級貢獻度累計統計表
     # --------------------------------------------------------------------------
     st.markdown("---")
     st.subheader("📊 班級貢獻度累計統計表 (首欄凍結窗格)")
     st.caption("💡 系統會即時動態整合歷史中「各個事由」對應的加扣分，並呈現於專用表單中：")
     
-    # 依最新歷史計算本機顯示用的數據
     current_hist = st.session_state["db_contribution_history"]
     if not current_hist.empty:
         curr_events = sorted(current_hist["事由"].astype(str).unique())
@@ -652,7 +682,6 @@ elif menu == "🌟 班級貢獻度登記與統計":
             except Exception:
                 continue
                 
-    # 轉換成凍結窗格 HTML 表格
     html_builder_contri = ['<div class="frozen-table-container"><table class="frozen-table"><thead><tr>']
     for col in contribution_stats_df.columns:
         html_builder_contri.append(f'<th>{col}</th>')

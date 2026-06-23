@@ -149,9 +149,7 @@ def load_sheet_csv(spreadsheet_id, sheet_name, fallback_df):
             parsed_df = parse_raw_timetable(raw_df)
             return parsed_df if parsed_df is not None else fallback_df
             
-        # =================【重大修正 1：位置標題安全機制】=================
-        # 如果使用者在雲端第一列留空(即無標題)，Pandas 會把該欄辨識為 Unnamed 並排除。
-        # 這裡我們主動依據物理直欄位置強行賦予正確標題，完美救援資料。
+        # =================【位置標題安全機制】=================
         if sheet_name == "班級貢獻度歷史紀錄":
             while len(raw_df.columns) < 6:
                 raw_df[f"Col_{len(raw_df.columns)}"] = ""
@@ -295,35 +293,36 @@ if menu == "📅 課表與出缺席即時管理":
     if sem_timetable.empty:
         st.info(f"💡 目前尚未在「課表」分頁中找到【{global_selected_semester}】的資料。請確認 Google Sheet 中課表的學期標記是否正確。")
 
-    # =================每日點名登記介面 (預載今天已存紀錄與節次，不怕重複寫入)=================
+    # =================每日點名登記介面 (增量新增模式)=================
     st.markdown("---")
     st.subheader(f"📝 {today_date.strftime('%Y/%m/%d')} 每日缺席登記")
-    st.caption("💡 系統支援部分節次請假。已經儲存過的缺席紀錄會自動顯示在下方，直接更改後再次儲存即可！")
+    st.caption("💡 採用「增量紀錄模式」：下方會顯示今日已登記請假的名單，您只需在下方選單**新增**後來請假的同學即可，歷史紀錄完全不會被覆蓋！")
     
     students_df = st.session_state["db_students"]
     student_options = [f"座號 {int(row['座號'])} - {row['姓名']}" for _, row in students_df.iterrows()]
     
-    # 智慧預先讀取當天已存紀錄，自動打勾已缺席學生
     today_str = today_date.strftime("%Y/%m/%d")
-    default_absents = []
     today_records = pd.DataFrame()
     
+    # 顯示今日已經儲存過的缺席紀錄
     if "db_attendance" in st.session_state and not st.session_state["db_attendance"].empty:
         today_attn = st.session_state["db_attendance"].copy()
         today_attn["日期_norm"] = today_attn["日期"].astype(str).str.replace("-", "/")
         today_records = today_attn[today_attn["日期_norm"] == today_str]
         
-        for _, r in today_records.iterrows():
-            status_str = str(r["出席狀態"]).strip()
-            if status_str != "出席" and status_str != "":
-                opt = f"座號 {int(r['座號'])} - {r['姓名']}"
-                if opt in student_options:
-                    default_absents.append(opt)
+        # 排除掉舊版殘留的「出席」紀錄，只顯示真正有缺席的紀錄
+        today_absents = today_records[(today_records["出席狀態"].str.strip() != "出席") & (today_records["出席狀態"].str.strip() != "")]
+        
+        if not today_absents.empty:
+            st.markdown("##### 📌 今日已登記之缺席/請假紀錄")
+            st.dataframe(today_absents[["座號", "姓名", "出席狀態"]], hide_index=True)
+        else:
+            st.info("今日目前尚無任何缺席紀錄。")
 
+    st.markdown("##### ➕ 新增缺席/請假學生")
     absent_selections = st.multiselect(
-        "請選擇今日有「缺席或請假」的學生", 
-        student_options, 
-        default=default_absents
+        "請選擇要「新增」缺席或請假的學生 (已在上方列表的同學無需重複選取)", 
+        student_options
     )
     
     student_absent_details = {}
@@ -345,22 +344,11 @@ if menu == "📅 課表與出缺席即時管理":
         for idx, sel in enumerate(absent_selections):
             with cols_abs[idx % 3]:
                 stu_name = sel.split(" - ")[1]
-                stu_seat = int(sel.split(" ")[1])
-                
-                # 智慧預載此學生今日已存的缺席節次
-                default_periods = []
-                if not today_records.empty:
-                    stu_today = today_records[today_records["座號"].astype(int) == stu_seat]
-                    if not stu_today.empty:
-                        saved_status = str(stu_today.iloc[0]["出席狀態"]).strip()
-                        if saved_status.startswith("缺席節次:"):
-                            default_periods = saved_status.split(":")[1].split(",")
                 
                 if available_periods:
                     period_sel = st.multiselect(
                         f"【{stu_name}】缺席節次", 
                         available_periods, 
-                        default=[p for p in default_periods if p in available_periods], 
                         key=f"abs_{sel}"
                     )
                     if period_sel:
@@ -372,29 +360,38 @@ if menu == "📅 課表與出缺席即時管理":
                     st.caption(f"{stu_name} (今日無課表，記為全日缺席)")
         st.markdown('</div>', unsafe_allow_html=True)
     
-    if st.button("💾 儲存今日出缺席紀錄"):
-        absent_ids = [int(sel.split(" ")[1]) for sel in absent_selections]
-        new_records, gas_records = [], []
-        
-        for _, row in students_df.iterrows():
-            stu_str = f"座號 {int(row['座號'])} - {row['姓名']}"
-            if int(row["座號"]) in absent_ids:
-                status = student_absent_details.get(stu_str, "全日缺席")
-            else:
-                status = "出席"
+    if st.button("💾 儲存新增的出缺席紀錄"):
+        if not absent_selections:
+            st.warning("⚠️ 請先選擇要新增的缺席學生再儲存。")
+        else:
+            new_records = []
+            
+            for sel in absent_selections:
+                stu_seat = int(sel.split(" ")[1])
+                stu_name = sel.split(" - ")[1]
+                status = student_absent_details.get(sel, "全日缺席")
                 
-            new_records.append({"日期": today_date.strftime("%Y/%m/%d"), "座號": int(row["座號"]), "姓名": row["姓名"], "出席狀態": status})
-            gas_records.append([today_date.strftime("%Y/%m/%d"), int(row["座號"]), row["姓名"], status])
-        
-        new_df = pd.DataFrame(new_records)
-        orig_attendance = st.session_state["db_attendance"]
-        if not orig_attendance.empty:
-            orig_attendance = orig_attendance[orig_attendance["日期"].astype(str) != today_date.strftime("%Y/%m/%d")]
-        
-        st.session_state["db_attendance"] = pd.concat([orig_attendance, new_df], ignore_index=True)
-        payload = {"action": "save_attendance", "date": today_date.strftime("%Y/%m/%d"), "records": gas_records}
-        if write_data_via_apps_script(GAS_WEB_APP_URL, payload):
-            st.rerun()
+                new_records.append({
+                    "日期": today_date.strftime("%Y/%m/%d"), 
+                    "座號": stu_seat, 
+                    "姓名": stu_name, 
+                    "出席狀態": status
+                })
+            
+            new_df = pd.DataFrame(new_records)
+            
+            # 將新紀錄附加到現有的總紀錄中 (純新增，不刪除舊紀錄)
+            st.session_state["db_attendance"] = pd.concat([st.session_state["db_attendance"], new_df], ignore_index=True)
+            
+            # 傳送給 GAS 時，把今日「所有的紀錄」傳過去以防 GAS 取代整天機制
+            updated_today_records = st.session_state["db_attendance"][
+                st.session_state["db_attendance"]["日期"].astype(str).str.replace("-", "/") == today_str
+            ]
+            gas_records = updated_today_records[["日期", "座號", "姓名", "出席狀態"]].values.tolist()
+            
+            payload = {"action": "save_attendance", "date": today_str, "records": gas_records}
+            if write_data_via_apps_script(GAS_WEB_APP_URL, payload):
+                st.rerun()
 
     # =================缺席月曆視圖=================
     st.markdown("---")

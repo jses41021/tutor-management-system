@@ -18,13 +18,55 @@ GS_URL = "https://docs.google.com/spreadsheets/d/1GLwY651HJBEDzUXDWmDONPp1j4Sj2J
 # 2. 您的 Google Apps Script 部署網址
 GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbxrHWClyYOu2RstCAWWA5CRIkR8_Wlqr7yWSwNo5fBnOibdDEo6lnEvf3U0dntysUVc/exec"
 
-# 3. 定義學期常數與對應表
+# 3. 定義學期常數與智慧型學期日期區間對應表 (依據 2024 年 8 月入學之高一學生推估)
 SEMESTERS = ["高一上學期", "高一下學期", "高二上學期", "高二下學期", "高三上學期", "高三下學期"]
 SEMESTER_MAPPING = {
     "高一上學期": "一上", "高一下學期": "一下",
     "高二上學期": "二上", "高二下學期": "二下",
     "高三上學期": "三上", "高三下學期": "三下"
 }
+
+SEMESTER_RANGES = {
+    "高一上學期": (datetime(2024, 8, 1), datetime(2025, 1, 31)),
+    "高一下學期": (datetime(2025, 2, 1), datetime(2025, 7, 31)),
+    "高二上學期": (datetime(2025, 8, 1), datetime(2026, 1, 31)),
+    "高二下學期": (datetime(2026, 2, 1), datetime(2026, 7, 31)),
+    "高三上學期": (datetime(2026, 8, 1), datetime(2027, 1, 31)),
+    "高三下學期": (datetime(2027, 2, 1), datetime(2027, 7, 31)),
+}
+
+# ==============================================================================
+# 智慧型日期學期判定核心邏輯
+# ==============================================================================
+def get_semester_by_date(dt):
+    """依據傳入的 datetime 或是 date 物件，自動判定所屬學期"""
+    if isinstance(dt, str):
+        try:
+            dt = datetime.strptime(dt.replace("-", "/"), "%Y/%m/%d")
+        except:
+            return "高二下學期"  # 預設相容
+    elif isinstance(dt, datetime):
+        pass
+    else:
+        # 將 date 轉換為 datetime
+        dt = datetime(dt.year, dt.month, dt.day)
+
+    for sem, (start_dt, end_dt) in SEMESTER_RANGES.items():
+        if start_dt <= dt <= end_dt:
+            return sem
+    return "高二下學期"  # 若超出邊界則預設
+
+def is_date_in_semester(date_str, semester_name):
+    """檢查特定的日期字串是否屬於該學期的時間區間"""
+    try:
+        date_str_clean = str(date_str).replace("-", "/")
+        dt = datetime.strptime(date_str_clean, "%Y/%m/%d")
+        if semester_name in SEMESTER_RANGES:
+            start_dt, end_dt = SEMESTER_RANGES[semester_name]
+            return start_dt <= dt <= end_dt
+    except Exception:
+        pass
+    return False
 
 # ==============================================================================
 # 頁面配置與主題
@@ -135,7 +177,20 @@ if "db_timetable" not in st.session_state:
 if "db_attendance" not in st.session_state:
     st.session_state["db_attendance"] = pd.DataFrame(columns=["日期", "座號", "姓名", "出席狀態"])
 if "db_scores" not in st.session_state:
-    st.session_state["db_scores"] = pd.DataFrame(columns=["考試類別", "座號", "姓名", "國文", "英文", "數學", "歷史", "地理", "公民"])
+    # 預設建立模擬段考成績以利進步金榜運算呈現
+    exams = ["高二上第一次段考", "高二上第二次段考", "高二上第三次段考"]
+    score_data = []
+    np.random.seed(42)
+    students = st.session_state["db_students"]
+    for ex in exams:
+        for idx, row in students.iterrows():
+            score_data.append({
+                "考試類別": ex, "座號": int(row["座號"]), "姓名": row["姓名"],
+                "國文": np.round(np.random.normal(65, 10), 1), "英文": np.round(np.random.normal(60, 12), 1),
+                "數學": np.round(np.random.normal(55, 15), 1), "歷史": np.round(np.random.normal(70, 8), 1),
+                "地理": np.round(np.random.normal(68, 10), 1), "公民": np.round(np.random.normal(72, 9), 1)
+            })
+    st.session_state["db_scores"] = pd.DataFrame(score_data)
 if "db_contribution_history" not in st.session_state:
     st.session_state["db_contribution_history"] = pd.DataFrame(columns=["日期", "座號", "姓名", "事由", "加扣分點數", "學期"])
 if "db_contribution_stats" not in st.session_state:
@@ -256,7 +311,7 @@ if menu == "📅 課表與出缺席即時管理":
         payload = {"action": "save_attendance", "date": today_date.strftime("%Y/%m/%d"), "records": gas_records}
         write_data_via_apps_script(GAS_WEB_APP_URL, payload)
 
-    # =================缺席月曆視圖=================
+    # =================缺席月曆視圖 (自動過濾當前月份之紀錄)=================
     st.markdown("---")
     st.subheader("📅 缺席狀況月曆")
     
@@ -299,10 +354,10 @@ if menu == "📅 課表與出缺席即時管理":
     
     st.markdown(html_cal, unsafe_allow_html=True)
 
-    # =================各科目「缺席次數」與「累積缺席節數」統計表=================
+    # =================各科目「缺席次數」與「累積缺席節數」統計表 (智慧日期學期篩選)=================
     st.markdown("---")
     st.subheader(f"📊 每位學生各科目「實際缺席次數」與「累積缺席節數」累計表 ({global_selected_semester})")
-    st.caption("💡 系統自動根據請假狀態（全日/特定節次）與課表比對，精準計算缺席的節數。")
+    st.caption("💡 系統自動根據請假狀態（全日/特定節次）與課表比對，並**依據日期智慧判定學期區間**，精準計算缺席的節數。")
     
     all_subjects = set()
     for day in days_of_week:
@@ -322,6 +377,11 @@ if menu == "📅 課表與出缺席即時管理":
     if not attn_df.empty:
         for _, row in attn_df.iterrows():
             date_str = str(row["日期"])
+            
+            # 【重要智慧機制】：僅運算符合當前全局所選學期日期區間的出缺席紀錄！
+            if not is_date_in_semester(date_str, global_selected_semester):
+                continue
+                
             status = str(row["出席狀態"]).strip()
             seat = int(row["座號"])
             
@@ -379,7 +439,7 @@ if menu == "📅 課表與出缺席即時管理":
         st.markdown("".join(html_builder), unsafe_allow_html=True)
 
 # ==============================================================================
-# 功能 2：段考成績分析與趨勢
+# 功能 2：段考成績分析與趨勢 (已完整復原「段考進步最優異金榜與趨勢曲線」)
 # ==============================================================================
 elif menu == "📊 段考成績分析與趨勢":
     st.markdown('<div class="main-title">📊 段考成績分析與趨勢</div>', unsafe_allow_html=True)
@@ -390,6 +450,7 @@ elif menu == "📊 段考成績分析與趨勢":
         subjects = ["國文", "英文", "數學", "歷史", "地理", "公民"]
         for sub in subjects:
             if sub in scores_df.columns: scores_df[sub] = pd.to_numeric(scores_df[sub], errors='coerce')
+        
         exam_categories = scores_df["考試類別"].unique()
         if len(exam_categories) > 0:
             selected_exam = st.selectbox("🎯 選擇分析的段考階段", exam_categories)
@@ -408,6 +469,56 @@ elif menu == "📊 段考成績分析與趨勢":
                         st.markdown("<br>".join(rank_list) if rank_list else "<span style='color:gray;'>無成績</span>", unsafe_allow_html=True)
                         st.markdown('</div>', unsafe_allow_html=True)
                         
+            # ================= 復原進步最多前 5 名功能區塊 =================
+            st.markdown("---")
+            st.subheader("📈 段考進步最多前 5 名 (總分進步幅度)")
+            
+            try:
+                exam_list = list(exam_categories)
+                current_idx = exam_list.index(selected_exam)
+                if current_idx == 0:
+                    st.info("💡 目前選取的是該學期第一次段考，尚無更早的成績可供比較「進步名次」。若要查看進步榜，請選取第二次或第三次段考。")
+                else:
+                    prev_exam = exam_list[current_idx - 1]
+                    prev_filtered = scores_df[scores_df["考試類別"] == prev_exam]
+                    
+                    exam_filtered_with_total = exam_filtered.copy()
+                    exam_filtered_with_total["總分"] = exam_filtered_with_total[subjects].sum(axis=1, min_count=1)
+                    
+                    prev_filtered_with_total = prev_filtered.copy()
+                    prev_filtered_with_total["總分"] = prev_filtered_with_total[subjects].sum(axis=1, min_count=1)
+                    
+                    progress_df = pd.merge(
+                        exam_filtered_with_total[["座號", "姓名", "總分"]],
+                        prev_filtered_with_total[["座號", "總分"]],
+                        on="座號",
+                        suffixes=("_本次", "_上次")
+                    )
+                    progress_df["總分進步"] = progress_df["總分_本次"] - progress_df["總分_上次"]
+                    
+                    valid_progress = progress_df.dropna(subset=["總分進步"])
+                    top_progress = valid_progress.sort_values(by="總分進步", ascending=False).head(5)
+                    
+                    if top_progress.empty:
+                        st.warning("無足夠的前後段考資料比對進步情況。")
+                    else:
+                        col_p1, col_p2 = st.columns([1, 2])
+                        with col_p1:
+                            st.markdown("##### 🏆 總分進步優異金榜")
+                            for rank, (_, r) in enumerate(top_progress.iterrows(), 1):
+                                st.markdown(f"**第 {rank} 名**：座號 {int(r['座號'])} **{r['姓名']}** (總分進步 +{round(r['總分進步'], 1)} 分)")
+                        with col_p2:
+                            fig_progress = px.bar(
+                                top_progress, x="姓名", y="總分進步", 
+                                text_auto='.1f', title=f"相比於「{prev_exam}」，總分進步幅度圖",
+                                color="總分進步", color_continuous_scale="Viridis"
+                            )
+                            fig_progress.update_layout(yaxis_title="進步分數", xaxis_title="姓名")
+                            st.plotly_chart(fig_progress, use_container_width=True)
+            except Exception as e:
+                st.error(f"計算進步排名時發生預期外錯誤: {e}")
+
+            # ================= 個人趨勢分析圖 =================
             st.markdown("---")
             st.subheader("📈 個人各科成績趨勢曲線圖")
             student_sel = st.selectbox("選擇要分析趨勢的學生", [f"座號 {int(row['座號'])} - {row['姓名']}" for _, row in st.session_state["db_students"].iterrows()])
@@ -420,7 +531,7 @@ elif menu == "📊 段考成績分析與趨勢":
                 st.plotly_chart(fig_trend, use_container_width=True)
 
 # ==============================================================================
-# 功能 3：班級貢獻度登記與統計 (修復 TypeError、新增學期區分)
+# 功能 3：班級貢獻度登記與統計 (新增學期日期判定)
 # ==============================================================================
 elif menu == "🌟 班級貢獻度登記與統計":
     st.markdown(f'<div class="main-title">🌟 班級貢獻度登記與統計 <span style="font-size:1.2rem; color:gray;">({global_selected_semester})</span></div>', unsafe_allow_html=True)
@@ -449,7 +560,9 @@ elif menu == "🌟 班級貢獻度登記與統計":
                 for sel in selected_students_contri:
                     seat = int(sel.split(" ")[1])
                     sname = students_df[students_df["座號"] == seat].iloc[0]["姓名"]
-                    pending_records.append({"學期": global_selected_semester, "日期": contri_date.strftime("%Y/%m/%d"), "座號": seat, "姓名": sname, "事由": contri_event, "加扣分點數": pts})
+                    # 智慧推估學期寫入
+                    inferred_sem = get_semester_by_date(contri_date)
+                    pending_records.append({"學期": inferred_sem, "日期": contri_date.strftime("%Y/%m/%d"), "座號": seat, "姓名": sname, "事由": contri_event, "加扣分點數": pts})
 
     with tab_text:
         paste_area = st.text_area("請在此貼上幹部紀錄文字：", value="日期:2026/6/22\n事由:朝會缺席\n加扣分:-1\n名單:1、2、3", height=150)
@@ -460,9 +573,11 @@ elif menu == "🌟 班級貢獻度登記與統計":
             if not p_event or not p_seats: st.error("❌ 解析失敗！請確保格式正確。")
             else:
                 pts = -1 if "-" in parsed_data.get("加扣分", "") or "扣" in parsed_data.get("加扣分", "") else 1
+                record_date_str = parsed_data.get("日期", datetime.today().strftime("%Y/%m/%d"))
+                inferred_sem = get_semester_by_date(record_date_str)
                 for seat in p_seats:
                     st_row = students_df[students_df["座號"] == seat]
-                    if not st_row.empty: pending_records.append({"學期": global_selected_semester, "日期": parsed_data.get("日期", datetime.today().strftime("%Y/%m/%d")), "座號": seat, "姓名": st_row.iloc[0]["姓名"], "事由": p_event, "加扣分點數": pts})
+                    if not st_row.empty: pending_records.append({"學期": inferred_sem, "日期": record_date_str, "座號": seat, "姓名": st_row.iloc[0]["姓名"], "事由": p_event, "加扣分點數": pts})
 
     with tab_daily:
         st.markdown("##### ⚡ 勾選每日固定需扣分名單")
@@ -476,34 +591,33 @@ elif menu == "🌟 班級貢獻度登記與統計":
 
         if st.button("🚀 送出每日固定扣分", key="btn_daily_submit"):
             d_str = datetime.today().strftime("%Y/%m/%d")
+            inferred_sem = get_semester_by_date(datetime.today())
             def append_daily(stu_list, ev_name):
                 for sel in stu_list:
                     seat = int(sel.split(" ")[1])
                     sname = students_df[students_df["座號"] == seat].iloc[0]["姓名"]
-                    pending_records.append({"學期": global_selected_semester, "日期": d_str, "座號": seat, "姓名": sname, "事由": ev_name, "加扣分點數": -1})
+                    pending_records.append({"學期": inferred_sem, "日期": d_str, "座號": seat, "姓名": sname, "事由": ev_name, "加扣分點數": -1})
             append_daily(late_students, "每日遲到")
             append_daily(noisy_students, "每日吵鬧")
             append_daily(no_form_students, "每日回條不交")
             append_daily(bad_clean_students, "每日打掃不確實")
             if not pending_records: st.warning("⚠️ 請至少選擇一位學生再送出！")
 
-    # ================= 統一執行儲存與即時更新 GS 邏輯 (完全防呆處理 TypeError) =================
+    # ================= 統一執行儲存與即時更新 GS 邏輯 =================
     if pending_records:
         new_hist_df = pd.DataFrame(pending_records)
         st.session_state["db_contribution_history"] = pd.concat([st.session_state["db_contribution_history"], new_hist_df], ignore_index=True)
-        # 歷史紀錄多傳送一個「學期」欄位寫入 Google Sheet
+        # 歷史細目送出 (包含智慧解析之學期)
         gas_history_records = [[r["日期"], r["座號"], r["姓名"], r["事由"], r["加扣分點數"], r.get("學期", global_selected_semester)] for r in pending_records]
         
         stats_df = st.session_state["db_contribution_stats"].copy()
         
-        # 防呆機制 1: 確保統計表有「學期」欄位
         if "學期" not in stats_df.columns:
             stats_df.insert(0, "學期", global_selected_semester)
             
         for r in pending_records:
             sem, sid, event, pts = r.get("學期", global_selected_semester), r["座號"], r["事由"], r["加扣分點數"]
             
-            # 找尋對應的直欄名稱
             col_name = event
             for c in stats_df.columns:
                 if event in str(c): col_name = c; break
@@ -511,7 +625,6 @@ elif menu == "🌟 班級貢獻度登記與統計":
             if col_name not in stats_df.columns: 
                 stats_df[col_name] = 0.0
             
-            # 防呆機制 2: 強制將欲計算的目標欄位轉換為浮點數，避開 NaN 或是 object 導致的 TypeError
             stats_df[col_name] = pd.to_numeric(stats_df[col_name], errors='coerce').fillna(0.0)
             if "加扣分總計" not in stats_df.columns:
                 stats_df["加扣分總計"] = 0.0
@@ -520,34 +633,29 @@ elif menu == "🌟 班級貢獻度登記與統計":
             # 定位 (學期, 座號)
             mask = (stats_df["座號"] == sid) & (stats_df["學期"].astype(str) == str(sem))
             if not mask.any():
-                # 沒有這個學期這位學生的資料，建一筆全新的
                 new_row = {"學期": sem, "座號": sid, "姓名": r["姓名"], "加扣分總計": 0.0}
                 stats_df = pd.concat([stats_df, pd.DataFrame([new_row])], ignore_index=True)
-                # 重新建立 mask 與空值填補
                 stats_df.fillna(0.0, inplace=True)
                 mask = (stats_df["座號"] == sid) & (stats_df["學期"].astype(str) == str(sem))
                 
             idx = stats_df.index[mask].tolist()[0]
             
-            # 防呆機制 3: 精準賦值
             stats_df.at[idx, col_name] = float(stats_df.at[idx, col_name]) + float(pts)
             stats_df.at[idx, "加扣分總計"] = float(stats_df.at[idx, "加扣分總計"]) + float(pts)
                     
         st.session_state["db_contribution_stats"] = stats_df
-        # 將運算後的最新表單轉送回 GAS
         stats_matrix = [stats_df.columns.tolist()] + stats_df.fillna("").values.tolist()
         
         payload = {"action": "save_contribution", "records": gas_history_records, "statsMatrix": stats_matrix}
         if write_data_via_apps_script(GAS_WEB_APP_URL, payload): st.rerun()
 
-    # =================班級貢獻度累計統計表 (依據學期篩選) =================
+    # ================= 班級貢獻度累計統計表 (依據學期篩選) =================
     st.markdown("---")
     st.subheader(f"📊 班級貢獻度累計統計表 ({global_selected_semester})")
     
     current_stats = st.session_state["db_contribution_stats"].copy()
     
     if not current_stats.empty:
-        # 只顯示當前所選學期的紀錄
         if "學期" in current_stats.columns:
             display_stats = current_stats[current_stats["學期"].astype(str) == global_selected_semester]
         else:
@@ -586,60 +694,65 @@ elif menu == "🌟 班級貢獻度登記與統計":
             html_builder_contri.append('</tbody></table></div>')
             st.markdown("".join(html_builder_contri), unsafe_allow_html=True)
 
-    # =================各月份熱心服務與待改進榜單 (完美處理同分)=================
+    # ================= 各月份熱心服務與待改進榜單 (智慧型學期日期過濾與完美同分排名) =================
     st.markdown("---")
     st.markdown("### 📅 歷史各月份熱心服務與待改進榜單")
-    st.caption("💡 永久呈現所有歷史紀錄月份。依照加扣分數嚴謹排名，同分的同學會並列於同一名次！")
+    st.caption(f"💡 這裡僅顯示屬於【{global_selected_semester}】月份區間的排行榜（依照加扣分數嚴謹排名，同分者一併列出）。")
     
     history_df = st.session_state["db_contribution_history"].copy()
     if not history_df.empty:
-        # 強制將點數轉為數值
         history_df["加扣分點數"] = pd.to_numeric(history_df["加扣分點數"], errors='coerce').fillna(0)
-        
         history_df["日期"] = pd.to_datetime(history_df["日期"], errors='coerce')
         history_df = history_df.dropna(subset=["日期"])
-        history_df["月份"] = history_df["日期"].dt.strftime("%Y 年 %m 月")
-        months = sorted(history_df["月份"].unique(), reverse=True)
         
-        for month in months:
-            with st.expander(f"📌 {month} 統計榜單", expanded=(month == months[0])):
-                month_data = history_df[history_df["月份"] == month]
-                student_sums = month_data.groupby(["座號", "姓名"])["加扣分點數"].sum().reset_index()
-                
-                col_good, col_bad = st.columns(2)
-                
-                with col_good:
-                    st.markdown("**🌟 熱心班務卓越榜 (加分最多)**")
-                    good_st = student_sums[student_sums["加扣分點數"] > 0].copy()
-                    if not good_st.empty:
-                        # rank(method='min') 會讓同分的人並列，下一個名次跳號 (如: 1, 1, 3, 4)
-                        good_st["名次"] = good_st["加扣分點數"].rank(method='min', ascending=False)
-                        top_good = good_st[good_st["名次"] <= 5].sort_values("名次")
-                        if not top_good.empty:
-                            for rank in sorted(top_good["名次"].unique()):
-                                group = top_good[top_good["名次"] == rank]
-                                names = "、".join([f"{int(r['座號'])}{r['姓名']}" for _, r in group.iterrows()])
-                                pts = group.iloc[0]["加扣分點數"]
-                                st.markdown(f"🏆 **第 {int(rank)} 名**: {names} (共 +{int(pts)} 分)")
+        # 【智慧過濾】：僅撈取屬於當前全局選定學期區間內日期的歷史紀錄！
+        history_df["學期_判定"] = history_df["日期"].apply(get_semester_by_date)
+        sem_filtered_history = history_df[history_df["學期_判定"] == global_selected_semester]
+        
+        if sem_filtered_history.empty:
+            st.info(f"💡 目前【{global_selected_semester}】歷史紀錄中無任何月份加扣分明細。")
+        else:
+            sem_filtered_history["月份"] = sem_filtered_history["日期"].dt.strftime("%Y 年 %m 月")
+            months = sorted(sem_filtered_history["月份"].unique(), reverse=True)
+            
+            for month in months:
+                with st.expander(f"📌 {month} 統計榜單", expanded=(month == months[0])):
+                    month_data = sem_filtered_history[sem_filtered_history["月份"] == month]
+                    student_sums = month_data.groupby(["座號", "姓名"])["加扣分點數"].sum().reset_index()
+                    
+                    col_good, col_bad = st.columns(2)
+                    
+                    with col_good:
+                        st.markdown("**🌟 熱心班務卓越榜 (加分最多)**")
+                        good_st = student_sums[student_sums["加扣分點數"] > 0].copy()
+                        if not good_st.empty:
+                            good_st["名次"] = good_st["加扣分點數"].rank(method='min', ascending=False)
+                            top_good = good_st[good_st["名次"] <= 5].sort_values("名次")
+                            if not top_good.empty:
+                                for rank in sorted(top_good["名次"].unique()):
+                                    group = top_good[top_good["名次"] == rank]
+                                    names = "、".join([f"{int(r['座號'])}{r['姓名']}" for _, r in group.iterrows()])
+                                    pts = group.iloc[0]["加扣分點數"]
+                                    st.markdown(f"🏆 **第 {int(rank)} 名**: {names} (共 +{int(pts)} 分)")
+                            else:
+                                st.write("本月無符合前五名加分紀錄")
                         else:
-                            st.write("本月無符合前五名加分紀錄")
-                    else:
-                        st.write("本月無加分紀錄")
-                        
-                with col_bad:
-                    st.markdown("**⚠️ 待改進名單 (扣分最多)**")
-                    bad_st = student_sums[student_sums["加扣分點數"] < 0].copy()
-                    if not bad_st.empty:
-                        # 扣分是負數，所以從數值最小 (負最多) 排到最大 (ascending=True)
-                        bad_st["名次"] = bad_st["加扣分點數"].rank(method='min', ascending=True)
-                        top_bad = bad_st[bad_st["名次"] <= 5].sort_values("名次")
-                        if not top_bad.empty:
-                            for rank in sorted(top_bad["名次"].unique()):
-                                group = top_bad[top_bad["名次"] == rank]
-                                names = "、".join([f"{int(r['座號'])}{r['姓名']}" for _, r in group.iterrows()])
-                                pts = group.iloc[0]["加扣分點數"]
-                                st.markdown(f"🚨 **第 {int(rank)} 名**: {names} (共 {int(pts)} 分)")
+                            st.write("本月無加分紀錄")
+                            
+                    with col_bad:
+                        st.markdown("**⚠️ 待改進名單 (扣分最多)**")
+                        bad_st = student_sums[student_sums["加扣分點數"] < 0].copy()
+                        if not bad_st.empty:
+                            bad_st["名次"] = bad_st["加扣分點數"].rank(method='min', ascending=True)
+                            top_bad = bad_st[bad_st["名次"] <= 5].sort_values("名次")
+                            if not top_bad.empty:
+                                for rank in sorted(top_bad["名次"].unique()):
+                                    group = top_bad[top_bad["名次"] == rank]
+                                    names = " Mus、".join([f"{int(r['座號'])}{r['姓名']}" for _, r in group.iterrows()])
+                                    names = names.replace(" Mus", "")  # 清除乾淨
+                                    pts = group.iloc[0]["加扣分點數"]
+                                    st.markdown(f"🚨 **第 {int(rank)} 名**: {names} (共 {int(pts)} 分)")
+                            else:
+                                st.write("本月無符合前五名扣分紀錄")
                         else:
-                            st.write("本月無符合前五名扣分紀錄")
-                    else:
-                        st.write("本月無扣分紀錄")
+                            st.write("本月無扣分紀錄")

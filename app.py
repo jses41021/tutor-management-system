@@ -40,16 +40,22 @@ SEMESTER_RANGES = {
 # ==============================================================================
 def get_semester_by_date(dt):
     """依據傳入的 datetime 或是 date 物件，自動判定所屬學期"""
+    if pd.isna(dt):
+        return "高二下學期"
     if isinstance(dt, str):
         try:
-            dt = datetime.strptime(dt.replace("-", "/"), "%Y/%m/%d")
+            dt = datetime.strptime(dt.replace("-", "/").split(" ")[0], "%Y/%m/%d")
         except:
             return "高二下學期"  # 預設相容
+    elif hasattr(dt, "to_pydatetime"):
+        dt = dt.to_pydatetime()
     elif isinstance(dt, datetime):
         pass
     else:
-        # 將 date 轉換為 datetime
-        dt = datetime(dt.year, dt.month, dt.day)
+        try:
+            dt = datetime(dt.year, dt.month, dt.day)
+        except:
+            return "高二下學期"
 
     for sem, (start_dt, end_dt) in SEMESTER_RANGES.items():
         if start_dt <= dt <= end_dt:
@@ -59,7 +65,7 @@ def get_semester_by_date(dt):
 def is_date_in_semester(date_str, semester_name):
     """檢查特定的日期字串是否屬於該學期的時間區間"""
     try:
-        date_str_clean = str(date_str).replace("-", "/")
+        date_str_clean = str(date_str).replace("-", "/").split(" ")[0]
         dt = datetime.strptime(date_str_clean, "%Y/%m/%d")
         if semester_name in SEMESTER_RANGES:
             start_dt, end_dt = SEMESTER_RANGES[semester_name]
@@ -107,7 +113,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==============================================================================
-# Google Sheet 免 API 讀寫核心邏輯 (支援智慧型課表解析)
+# Google Sheet 免 API 讀寫核心邏輯 (支援智慧型課表解析與空白標題防禦)
 # ==============================================================================
 def get_spreadsheet_id(url_or_id):
     if "docs.google.com/spreadsheets" in url_or_id:
@@ -138,9 +144,38 @@ def load_sheet_csv(spreadsheet_id, sheet_name, fallback_df):
         encoded_name = urllib.parse.quote(sheet_name)
         url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/gviz/tq?tqx=out:csv&sheet={encoded_name}"
         raw_df = pd.read_csv(url, header=None if sheet_name == "課表" else 'infer', keep_default_na=False)
+        
         if sheet_name == "課表":
             parsed_df = parse_raw_timetable(raw_df)
             return parsed_df if parsed_df is not None else fallback_df
+            
+        # =================【重大修正 1：位置標題安全機制】=================
+        # 如果使用者在雲端第一列留空(即無標題)，Pandas 會把該欄辨識為 Unnamed 並排除。
+        # 這裡我們主動依據物理直欄位置強行賦予正確標題，完美救援資料。
+        if sheet_name == "班級貢獻度歷史紀錄":
+            while len(raw_df.columns) < 6:
+                raw_df[f"Col_{len(raw_df.columns)}"] = ""
+            new_cols = list(raw_df.columns)
+            new_cols[0] = "日期"
+            new_cols[1] = "座號"
+            new_cols[2] = "姓名"
+            new_cols[3] = "事由"
+            new_cols[4] = "加扣分點數"
+            new_cols[5] = "學期"
+            raw_df.columns = new_cols
+            return raw_df
+            
+        if sheet_name == "出缺席紀錄":
+            while len(raw_df.columns) < 4:
+                raw_df[f"Col_{len(raw_df.columns)}"] = ""
+            new_cols = list(raw_df.columns)
+            new_cols[0] = "日期"
+            new_cols[1] = "座號"
+            new_cols[2] = "姓名"
+            new_cols[3] = "出席狀態"
+            raw_df.columns = new_cols
+            return raw_df
+
         raw_df = raw_df.loc[:, ~raw_df.columns.str.contains('^Unnamed')]
         return raw_df
     except Exception: return fallback_df
@@ -177,7 +212,6 @@ if "db_timetable" not in st.session_state:
 if "db_attendance" not in st.session_state:
     st.session_state["db_attendance"] = pd.DataFrame(columns=["日期", "座號", "姓名", "出席狀態"])
 if "db_scores" not in st.session_state:
-    # 預設建立模擬段考成績以利進步金榜運算呈現
     exams = ["高二上第一次段考", "高二上第二次段考", "高二上第三次段考"]
     score_data = []
     np.random.seed(42)
@@ -215,7 +249,7 @@ if spreadsheet_id and "db_loaded" not in st.session_state:
     st.session_state["db_contribution_stats"] = load_sheet_csv(spreadsheet_id, "班級貢獻度統計", st.session_state["db_contribution_stats"])
     st.session_state["db_loaded"] = True
 
-# 【核心防禦機制】: 強制確保載入後的歷史資料結構完整性，避免因為 Google Sheet 欄位缺失導致 KeyError
+# 【防禦機制】：確保載入後的資料結構完整性，避免因為 Sheet 欄位缺失導致 KeyError
 if "db_contribution_history" in st.session_state:
     history_required_cols = ["日期", "座號", "姓名", "事由", "加扣分點數", "學期"]
     for col in history_required_cols:
@@ -255,21 +289,42 @@ if menu == "📅 課表與出缺席即時管理":
     timetable_df = st.session_state["db_timetable"]
     sem_timetable = pd.DataFrame()
     if not timetable_df.empty and "學期" in timetable_df.columns:
-        # 同時比對全名與簡稱 (例如：高二下學期 or 二下)
         short_sem = SEMESTER_MAPPING.get(global_selected_semester, global_selected_semester)
         sem_timetable = timetable_df[timetable_df["學期"].astype(str).isin([global_selected_semester, short_sem])]
 
     if sem_timetable.empty:
         st.info(f"💡 目前尚未在「課表」分頁中找到【{global_selected_semester}】的資料。請確認 Google Sheet 中課表的學期標記是否正確。")
 
-    # =================每日點名登記介面 (支援部分節次缺席)=================
+    # =================每日點名登記介面 (預載今天已存紀錄與節次，不怕重複寫入)=================
     st.markdown("---")
     st.subheader(f"📝 {today_date.strftime('%Y/%m/%d')} 每日缺席登記")
-    st.caption("💡 可在此勾選今日缺席的學生。若為部分節次請假，請在下方展開處勾選特定節次。")
+    st.caption("💡 系統支援部分節次請假。已經儲存過的缺席紀錄會自動顯示在下方，直接更改後再次儲存即可！")
     
     students_df = st.session_state["db_students"]
     student_options = [f"座號 {int(row['座號'])} - {row['姓名']}" for _, row in students_df.iterrows()]
-    absent_selections = st.multiselect("請選擇今日有「缺席或請假」的學生", student_options)
+    
+    # 智慧預先讀取當天已存紀錄，自動打勾已缺席學生
+    today_str = today_date.strftime("%Y/%m/%d")
+    default_absents = []
+    today_records = pd.DataFrame()
+    
+    if "db_attendance" in st.session_state and not st.session_state["db_attendance"].empty:
+        today_attn = st.session_state["db_attendance"].copy()
+        today_attn["日期_norm"] = today_attn["日期"].astype(str).str.replace("-", "/")
+        today_records = today_attn[today_attn["日期_norm"] == today_str]
+        
+        for _, r in today_records.iterrows():
+            status_str = str(r["出席狀態"]).strip()
+            if status_str != "出席" and status_str != "":
+                opt = f"座號 {int(r['座號'])} - {r['姓名']}"
+                if opt in student_options:
+                    default_absents.append(opt)
+
+    absent_selections = st.multiselect(
+        "請選擇今日有「缺席或請假」的學生", 
+        student_options, 
+        default=default_absents
+    )
     
     student_absent_details = {}
     days_of_week = ["星期一", "星期二", "星期三", "星期四", "星期五"]
@@ -290,8 +345,24 @@ if menu == "📅 課表與出缺席即時管理":
         for idx, sel in enumerate(absent_selections):
             with cols_abs[idx % 3]:
                 stu_name = sel.split(" - ")[1]
+                stu_seat = int(sel.split(" ")[1])
+                
+                # 智慧預載此學生今日已存的缺席節次
+                default_periods = []
+                if not today_records.empty:
+                    stu_today = today_records[today_records["座號"].astype(int) == stu_seat]
+                    if not stu_today.empty:
+                        saved_status = str(stu_today.iloc[0]["出席狀態"]).strip()
+                        if saved_status.startswith("缺席節次:"):
+                            default_periods = saved_status.split(":")[1].split(",")
+                
                 if available_periods:
-                    period_sel = st.multiselect(f"【{stu_name}】缺席節次", available_periods, key=f"abs_{sel}")
+                    period_sel = st.multiselect(
+                        f"【{stu_name}】缺席節次", 
+                        available_periods, 
+                        default=[p for p in default_periods if p in available_periods], 
+                        key=f"abs_{sel}"
+                    )
                     if period_sel:
                         student_absent_details[sel] = "缺席節次:" + ",".join(period_sel)
                     else:
@@ -322,9 +393,10 @@ if menu == "📅 課表與出缺席即時管理":
         
         st.session_state["db_attendance"] = pd.concat([orig_attendance, new_df], ignore_index=True)
         payload = {"action": "save_attendance", "date": today_date.strftime("%Y/%m/%d"), "records": gas_records}
-        write_data_via_apps_script(GAS_WEB_APP_URL, payload)
+        if write_data_via_apps_script(GAS_WEB_APP_URL, payload):
+            st.rerun()
 
-    # =================缺席月曆視圖 (自動過濾當前月份之紀錄)=================
+    # =================缺席月曆視圖=================
     st.markdown("---")
     st.subheader("📅 缺席狀況月曆")
     
@@ -367,7 +439,7 @@ if menu == "📅 課表與出缺席即時管理":
     
     st.markdown(html_cal, unsafe_allow_html=True)
 
-    # =================各科目「缺席次數」與「累積缺席節數」統計表 (智慧日期學期篩選)=================
+    # =================各科目「缺席次數」與「累積缺席節數」統計表=================
     st.markdown("---")
     st.subheader(f"📊 每位學生各科目「實際缺席次數」與「累積缺席節數」累計表 ({global_selected_semester})")
     st.caption("💡 系統自動根據請假狀態（全日/特定節次）與課表比對，並**依據日期智慧判定學期區間**，精準計算缺席的節數。")
@@ -482,7 +554,7 @@ elif menu == "📊 段考成績分析與趨勢":
                         st.markdown("<br>".join(rank_list) if rank_list else "<span style='color:gray;'>無成績</span>", unsafe_allow_html=True)
                         st.markdown('</div>', unsafe_allow_html=True)
                         
-            # ================= 復原進步最多前 5 名功能區塊 =================
+            # ================= 進步最多前 5 名功能區塊 =================
             st.markdown("---")
             st.subheader("📈 段考進步最多前 5 名 (總分進步幅度)")
             
@@ -531,7 +603,7 @@ elif menu == "📊 段考成績分析與趨勢":
             except Exception as e:
                 st.error(f"計算進步排名時發生預期外錯誤: {e}")
 
-            # ================= 個人趨勢 analysis 圖 =================
+            # ================= 個人趨勢分析圖 =================
             st.markdown("---")
             st.subheader("📈 個人各科成績趨勢曲線圖")
             student_sel = st.selectbox("選擇要分析趨勢的學生", [f"座號 {int(row['座號'])} - {row['姓名']}" for _, row in st.session_state["db_students"].iterrows()])
@@ -544,7 +616,7 @@ elif menu == "📊 段考成績分析與趨勢":
                 st.plotly_chart(fig_trend, use_container_width=True)
 
 # ==============================================================================
-# 功能 3：班級貢獻度登記與統計 (新增學期日期判定)
+# 功能 3：班級貢獻度登記與統計 (新增學期日期判定與標題容錯)
 # ==============================================================================
 elif menu == "🌟 班級貢獻度登記與統計":
     st.markdown(f'<div class="main-title">🌟 班級貢獻度登記與統計 <span style="font-size:1.2rem; color:gray;">({global_selected_semester})</span></div>', unsafe_allow_html=True)
@@ -573,7 +645,6 @@ elif menu == "🌟 班級貢獻度登記與統計":
                 for sel in selected_students_contri:
                     seat = int(sel.split(" ")[1])
                     sname = students_df[students_df["座號"] == seat].iloc[0]["姓名"]
-                    # 智慧推估學期寫入
                     inferred_sem = get_semester_by_date(contri_date)
                     pending_records.append({"學期": inferred_sem, "日期": contri_date.strftime("%Y/%m/%d"), "座號": seat, "姓名": sname, "事由": contri_event, "加扣分點數": pts})
 

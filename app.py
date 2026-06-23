@@ -215,6 +215,19 @@ if spreadsheet_id and "db_loaded" not in st.session_state:
     st.session_state["db_contribution_stats"] = load_sheet_csv(spreadsheet_id, "班級貢獻度統計", st.session_state["db_contribution_stats"])
     st.session_state["db_loaded"] = True
 
+# 【核心防禦機制】: 強制確保載入後的歷史資料結構完整性，避免因為 Google Sheet 欄位缺失導致 KeyError
+if "db_contribution_history" in st.session_state:
+    history_required_cols = ["日期", "座號", "姓名", "事由", "加扣分點數", "學期"]
+    for col in history_required_cols:
+        if col not in st.session_state["db_contribution_history"].columns:
+            st.session_state["db_contribution_history"][col] = 0.0 if col == "加扣分點數" else ""
+
+if "db_contribution_stats" in st.session_state:
+    stats_required_cols = ["學期", "座號", "姓名", "加扣分總計"]
+    for col in stats_required_cols:
+        if col not in st.session_state["db_contribution_stats"].columns:
+            st.session_state["db_contribution_stats"][col] = 0.0 if col in ["座號", "加扣分總計"] else ""
+
 for df_key in ["db_students", "db_contribution_history", "db_contribution_stats"]:
     if df_key in st.session_state and "座號" in st.session_state[df_key].columns:
         st.session_state[df_key]["座號"] = pd.to_numeric(st.session_state[df_key]["座號"], errors='coerce').fillna(0).astype(int)
@@ -518,7 +531,7 @@ elif menu == "📊 段考成績分析與趨勢":
             except Exception as e:
                 st.error(f"計算進步排名時發生預期外錯誤: {e}")
 
-            # ================= 個人趨勢分析圖 =================
+            # ================= 個人趨勢 analysis 圖 =================
             st.markdown("---")
             st.subheader("📈 個人各科成績趨勢曲線圖")
             student_sel = st.selectbox("選擇要分析趨勢的學生", [f"座號 {int(row['座號'])} - {row['姓名']}" for _, row in st.session_state["db_students"].iterrows()])
@@ -701,8 +714,14 @@ elif menu == "🌟 班級貢獻度登記與統計":
     
     history_df = st.session_state["db_contribution_history"].copy()
     if not history_df.empty:
-        history_df["加扣分點數"] = pd.to_numeric(history_df["加扣分點數"], errors='coerce').fillna(0)
+        # 【重要安全修復】：補上缺失的加扣分點數欄位之數值轉換，若欄位缺失則默認轉為0
+        if "加扣分點數" in history_df.columns:
+            history_df["加扣分點數"] = pd.to_numeric(history_df["加扣分點數"], errors='coerce').fillna(0)
+        else:
+            history_df["加扣分點數"] = 0
+            
         history_df["日期"] = pd.to_datetime(history_df["日期"], errors='coerce')
+        # 排除日期無效或空白的行（這會自動剔除雲端上您預填的名單範本列）
         history_df = history_df.dropna(subset=["日期"])
         
         # 【智慧過濾】：僅撈取屬於當前全局選定學期區間內日期的歷史紀錄！

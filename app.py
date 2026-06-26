@@ -480,7 +480,8 @@ if menu == "📅 課表與出缺席即時管理":
     attendance_stats.insert(0, "座號", students_df["座號"].values)
     
     if not attn_df.empty:
-        for _, row in attn_iterrows():
+        # 修正：將原本打錯的 attn_iterrows() 改為 attn_df.iterrows()
+        for _, row in attn_df.iterrows():
             date_str = str(row["日期"])
             
             if not is_date_in_semester(date_str, global_selected_semester):
@@ -620,13 +621,35 @@ elif menu == "📊 段考成績分析與趨勢":
                 st.error(f"計算進步排名時發生預期外錯誤: {e}")
 
             st.markdown("---")
-            st.subheader("📈 個人各科成績趨勢曲線圖")
+            st.subheader("📈 個人各科成績趨勢曲線圖 (含班平均對照)")
             student_sel = st.selectbox("選擇要分析趨勢的學生", [f"座號 {int(row['座號'])} - {row['姓名']}" for _, row in st.session_state["db_students"].iterrows()])
             sel_id = int(student_sel.split(" ")[1])
             student_scores = scores_df[scores_df["座號"].astype(int) == sel_id]
+            
             if not student_scores.empty:
+                # 處理學生個人成績
                 melted_scores = student_scores.melt(id_vars=["考試類別"], value_vars=[s for s in subjects if s in student_scores.columns], var_name="科目", value_name="分數").dropna()
-                fig_trend = px.line(melted_scores, x="考試類別", y="分數", color="科目", markers=True, title=f"{student_sel.split(' - ')[1]} 的成績變化", category_orders={"考試類別": list(exam_categories)})
+                melted_scores["資料類型"] = "個人成績"
+                
+                # 計算與處理班平均成績
+                class_avg = scores_df.groupby("考試類別")[[s for s in subjects if s in scores_df.columns]].mean().reset_index()
+                melted_avg = class_avg.melt(id_vars=["考試類別"], value_vars=[s for s in subjects if s in class_avg.columns], var_name="科目", value_name="分數").dropna()
+                melted_avg["資料類型"] = "班平均"
+                
+                # 合併資料集，準備作圖
+                combined_trend = pd.concat([melted_scores, melted_avg], ignore_index=True)
+                
+                # 繪製趨勢圖 (利用 line_dash 區分個人和平均，並用 color 確保同科目同顏色)
+                fig_trend = px.line(
+                    combined_trend, 
+                    x="考試類別", 
+                    y="分數", 
+                    color="科目", 
+                    line_dash="資料類型", # 關鍵設定：以線條樣式區分個人(實線)和平均(虛線)
+                    markers=True, 
+                    title=f"{student_sel.split(' - ')[1]} 的成績與班平均比較", 
+                    category_orders={"考試類別": list(exam_categories)}
+                )
                 fig_trend.update_layout(yaxis_range=[0, 100])
                 st.plotly_chart(fig_trend, use_container_width=True)
 
@@ -688,13 +711,17 @@ elif menu == "🌟 班級貢獻度登記與統計":
 
     with tab_daily:
         st.markdown("##### ⚡ 勾選每日固定需扣分名單")
-        col_d1, col_d2 = st.columns(2)
+        # 修改為三欄位排列，以容納第五個項目
+        col_d1, col_d2, col_d3 = st.columns(3)
         with col_d1:
             late_students = st.multiselect("⏰ 每日遲到 (-1)", student_list_for_sel)
             noisy_students = st.multiselect("📢 每日吵鬧 (-1)", student_list_for_sel)
         with col_d2:
             no_form_students = st.multiselect("📄 每日回條不交 (-1)", student_list_for_sel)
             bad_clean_students = st.multiselect("🧹 每日打掃不確實 (-1)", student_list_for_sel)
+        with col_d3:
+            # 新增：每日放學位置有垃圾或桌面凌亂
+            messy_desk_students = st.multiselect("🗑️ 放學位置有垃圾或桌面凌亂 (-1)", student_list_for_sel)
 
         if st.button("🚀 送出每日固定扣分", key="btn_daily_submit"):
             d_str = datetime.today().strftime("%Y/%m/%d")
@@ -704,10 +731,14 @@ elif menu == "🌟 班級貢獻度登記與統計":
                     seat = int(sel.split(" ")[1])
                     sname = students_df[students_df["座號"] == seat].iloc[0]["姓名"]
                     pending_records.append({"學期": inferred_sem, "日期": d_str, "座號": seat, "姓名": sname, "事由": ev_name, "加扣分點數": -1})
+            
             append_daily(late_students, "每日遲到")
             append_daily(noisy_students, "每日吵鬧")
             append_daily(no_form_students, "每日回條不交")
             append_daily(bad_clean_students, "每日打掃不確實")
+            # 新增：送出時事由名稱需能對應 GS 上方欄位標題中的字眼
+            append_daily(messy_desk_students, "每日放學位置有垃圾或桌面凌亂") 
+            
             if not pending_records: st.warning("⚠️ 請至少選擇一位學生再送出！")
 
     # ================= 統一執行儲存與即時更新 GS 邏輯 =================

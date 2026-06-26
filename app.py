@@ -480,7 +480,6 @@ if menu == "📅 課表與出缺席即時管理":
     attendance_stats.insert(0, "座號", students_df["座號"].values)
     
     if not attn_df.empty:
-        # 修正：將原本打錯的 attn_iterrows() 改為 attn_df.iterrows()
         for _, row in attn_df.iterrows():
             date_str = str(row["日期"])
             
@@ -720,7 +719,6 @@ elif menu == "🌟 班級貢獻度登記與統計":
             no_form_students = st.multiselect("📄 每日回條不交 (-1)", student_list_for_sel)
             bad_clean_students = st.multiselect("🧹 每日打掃不確實 (-1)", student_list_for_sel)
         with col_d3:
-            # 新增：每日放學位置有垃圾或桌面凌亂
             messy_desk_students = st.multiselect("🗑️ 放學位置有垃圾或桌面凌亂 (-1)", student_list_for_sel)
 
         if st.button("🚀 送出每日固定扣分", key="btn_daily_submit"):
@@ -736,7 +734,6 @@ elif menu == "🌟 班級貢獻度登記與統計":
             append_daily(noisy_students, "每日吵鬧")
             append_daily(no_form_students, "每日回條不交")
             append_daily(bad_clean_students, "每日打掃不確實")
-            # 新增：送出時事由名稱需能對應 GS 上方欄位標題中的字眼
             append_daily(messy_desk_students, "每日放學位置有垃圾或桌面凌亂") 
             
             if not pending_records: st.warning("⚠️ 請至少選擇一位學生再送出！")
@@ -755,6 +752,7 @@ elif menu == "🌟 班級貢獻度登記與統計":
         for r in pending_records:
             sem, sid, event, pts = r.get("學期", global_selected_semester), r["座號"], r["事由"], r["加扣分點數"]
             
+            # 對應 Google Sheet 既有標題 (處理含有 (-1) 等自訂後綴的攔位)
             col_name = event
             for c in stats_df.columns:
                 if event in str(c): col_name = c; break
@@ -767,11 +765,15 @@ elif menu == "🌟 班級貢獻度登記與統計":
                 stats_df["加扣分總計"] = 0.0
             stats_df["加扣分總計"] = pd.to_numeric(stats_df["加扣分總計"], errors='coerce').fillna(0.0)
             
+            # 使用安全的索引指定模式來新增資料與合併，解決舊版 DataFrame inplace 更新的 TypeError (圖三崩潰主因)
             mask = (stats_df["座號"] == sid) & (stats_df["學期"].astype(str) == str(sem))
             if not mask.any():
-                new_row = {"學期": sem, "座號": sid, "姓名": r["姓名"], "加扣分總計": 0.0}
-                stats_df = pd.concat([stats_df, pd.DataFrame([new_row])], ignore_index=True)
-                stats_df.fillna(0.0, inplace=True)
+                new_idx = stats_df.index.max() + 1 if not stats_df.empty else 0
+                stats_df.loc[new_idx, "學期"] = sem
+                stats_df.loc[new_idx, "座號"] = sid
+                stats_df.loc[new_idx, "姓名"] = r["姓名"]
+                stats_df.loc[new_idx, "加扣分總計"] = 0.0
+                stats_df = stats_df.fillna(0.0)
                 mask = (stats_df["座號"] == sid) & (stats_df["學期"].astype(str) == str(sem))
                 
             idx = stats_df.index[mask].tolist()[0]
@@ -780,6 +782,7 @@ elif menu == "🌟 班級貢獻度登記與統計":
             stats_df.at[idx, "加扣分總計"] = float(stats_df.at[idx, "加扣分總計"]) + float(pts)
                     
         st.session_state["db_contribution_stats"] = stats_df
+        # 轉譯輸出確保格式相容 GS
         stats_matrix = [stats_df.columns.tolist()] + stats_df.fillna("").values.tolist()
         
         payload = {"action": "save_contribution", "records": gas_history_records, "statsMatrix": stats_matrix}
@@ -792,43 +795,99 @@ elif menu == "🌟 班級貢獻度登記與統計":
     current_stats = st.session_state["db_contribution_stats"].copy()
     
     if not current_stats.empty:
+        # 過濾特定學期資料
         if "學期" in current_stats.columns:
-            display_stats = current_stats[current_stats["學期"].astype(str) == global_selected_semester]
+            display_stats = current_stats[current_stats["學期"].astype(str) == global_selected_semester].copy()
         else:
-            display_stats = current_stats
+            display_stats = current_stats.copy()
             
-        if display_stats.empty:
-            st.info(f"💡 目前【{global_selected_semester}】尚未有加扣分統計紀錄。")
+        # --- 增強防護：強制合併所有學生名單並自動補足缺失的 GS 欄位 (解決圖一與圖二差異) ---
+        students_base_df = st.session_state["db_students"][["座號", "姓名"]].copy()
+        if not display_stats.empty:
+            display_stats = pd.merge(students_base_df, display_stats.drop(columns=["姓名"], errors="ignore"), on="座號", how="left")
+            display_stats["學期"] = global_selected_semester
+            display_stats = display_stats.fillna(0.0)
         else:
-            sticky_cols_count = 3 if "學期" in display_stats.columns else 2
-            html_builder_contri = ['<div class="frozen-table-container"><table class="frozen-table"><thead><tr>']
-            for i, col in enumerate(display_stats.columns):
-                style_class = ' class="sticky-col"' if i < sticky_cols_count else ''
-                style_prop = f' style="left: {i*80}px;"' if i < sticky_cols_count else ''
-                html_builder_contri.append(f'<th{style_class}{style_prop}>{col}</th>')
-            html_builder_contri.append('</tr></thead><tbody>')
-            
-            for _, row in display_stats.iterrows():
-                html_builder_contri.append('<tr>')
-                for i, val in enumerate(row):
-                    style_class = ' class="sticky-col"' if i < sticky_cols_count else ''
-                    style_prop = f' style="left: {i*80}px; background-color: #F1F5F9;"' if i < sticky_cols_count else ''
-                    
-                    try:
-                        num_val = float(val)
-                        is_num = not pd.isna(num_val) and str(val).replace('.', '', 1).replace('-', '', 1).isdigit()
-                    except:
-                        is_num = False
+            display_stats = students_base_df.copy()
+            display_stats.insert(0, "學期", global_selected_semester)
+            display_stats["加扣分總計"] = 0.0
+            for c in current_stats.columns:
+                if c not in display_stats.columns:
+                    display_stats[c] = 0.0
 
-                    if is_num and i >= sticky_cols_count:
-                        if num_val > 0: html_builder_contri.append(f'<td{style_class} style="color: green; font-weight: bold;">+{int(num_val)}</td>')
-                        elif num_val < 0: html_builder_contri.append(f'<td{style_class} style="color: red; font-weight: bold;">{int(num_val)}</td>')
-                        else: html_builder_contri.append(f'<td{style_class}>{int(num_val)}</td>')
+        # 將基準四欄放在最前面，其餘依名稱排序
+        base_cols = ["學期", "座號", "姓名", "加扣分總計"]
+        other_cols = sorted([c for c in display_stats.columns if c not in base_cols])
+        display_stats = display_stats[base_cols + other_cols]
+        
+        # 依座號重新排序
+        display_stats["座號"] = pd.to_numeric(display_stats["座號"], errors='coerce').fillna(0).astype(int)
+        display_stats = display_stats.sort_values("座號")
+            
+        # 渲染前四欄為自適應凍結窗格
+        sticky_cols_count = 4 
+        html_builder_contri = ['<div class="frozen-table-container"><table class="frozen-table"><thead><tr>']
+        
+        for i, col in enumerate(display_stats.columns):
+            style_class = ' class="sticky-col"' if i < sticky_cols_count else ''
+            
+            # 控制凍結窗格精準位置避免重疊破圖
+            if i == 0: left_px, width = 0, 100    # 學期
+            elif i == 1: left_px, width = 100, 60 # 座號
+            elif i == 2: left_px, width = 160, 90 # 姓名
+            elif i == 3: left_px, width = 250, 110 # 加扣分總計
+            else: left_px, width = 0, 0
+            
+            width_style = f' min-width: {width}px; max-width: {width}px;' if i < sticky_cols_count else ''
+            style_prop = f' style="left: {left_px}px;{width_style}"' if i < sticky_cols_count else ''
+            
+            html_builder_contri.append(f'<th{style_class}{style_prop}>{col}</th>')
+            
+        html_builder_contri.append('</tr></thead><tbody>')
+        
+        for _, row in display_stats.iterrows():
+            html_builder_contri.append('<tr>')
+            for i, val in enumerate(row):
+                col_name = display_stats.columns[i]
+                style_class = ' class="sticky-col"' if i < sticky_cols_count else ''
+                
+                if i == 0: left_px, width = 0, 100
+                elif i == 1: left_px, width = 100, 60
+                elif i == 2: left_px, width = 160, 90
+                elif i == 3: left_px, width = 250, 110
+                else: left_px, width = 0, 0
+                
+                # 幫總分加上微醒目的高亮底色
+                bg_color = "#FEF3C7" if col_name == "加扣分總計" else "#F1F5F9"
+                width_style = f' min-width: {width}px; max-width: {width}px;' if i < sticky_cols_count else ''
+                style_prop = f' style="left: {left_px}px; background-color: {bg_color};{width_style}"' if i < sticky_cols_count else ''
+                
+                try:
+                    num_val = float(val)
+                    is_num = not pd.isna(num_val) and str(val).replace('.', '', 1).replace('-', '', 1).isdigit()
+                except:
+                    is_num = False
+
+                if is_num and col_name not in ["學期", "姓名"]:
+                    val_disp = int(num_val)
+                else:
+                    val_disp = val if pd.notna(val) else ""
+
+                if is_num and i >= sticky_cols_count:
+                    if num_val > 0: html_builder_contri.append(f'<td{style_class} style="color: green; font-weight: bold;">+{val_disp}</td>')
+                    elif num_val < 0: html_builder_contri.append(f'<td{style_class} style="color: red; font-weight: bold;">{val_disp}</td>')
+                    else: html_builder_contri.append(f'<td{style_class}>{val_disp}</td>')
+                else:
+                    if col_name == "加扣分總計" and is_num:
+                        if num_val > 0: html_builder_contri.append(f'<td{style_class}{style_prop}><span style="color: green; font-weight: bold;">+{val_disp}</span></td>')
+                        elif num_val < 0: html_builder_contri.append(f'<td{style_class}{style_prop}><span style="color: red; font-weight: bold;">{val_disp}</span></td>')
+                        else: html_builder_contri.append(f'<td{style_class}{style_prop}>{val_disp}</td>')
                     else:
-                        html_builder_contri.append(f'<td{style_class}{style_prop}>{val if pd.notna(val) else ""}</td>')
-                html_builder_contri.append('</tr>')
-            html_builder_contri.append('</tbody></table></div>')
-            st.markdown("".join(html_builder_contri), unsafe_allow_html=True)
+                        html_builder_contri.append(f'<td{style_class}{style_prop}>{val_disp}</td>')
+                        
+            html_builder_contri.append('</tr>')
+        html_builder_contri.append('</tbody></table></div>')
+        st.markdown("".join(html_builder_contri), unsafe_allow_html=True)
 
     # ================= 各月份熱心服務與待改進榜單 =================
     st.markdown("---")

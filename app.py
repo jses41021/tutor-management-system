@@ -10,6 +10,44 @@ import re
 import calendar
 
 # ==============================================================================
+# 頁面配置與主題 (必須為第一個 Streamlit 指令)
+# ==============================================================================
+st.set_page_config(
+    page_title="導師班級經營管理系統",
+    page_icon="🎓",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+st.markdown("""
+<style>
+    /* 主標題樣式 */
+    .main-title { font-size: 2.2rem; color: #1E3A8A; font-weight: 700; margin-bottom: 20px; border-bottom: 3px solid #3B82F6; padding-bottom: 10px; }
+    /* 卡片式設計 */
+    .card-container { background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+    /* 凍結窗格的表格 CSS 樣式 */
+    .frozen-table-container { overflow-x: auto; max-width: 100%; border: 1px solid #E2E8F0; border-radius: 8px; margin-bottom: 20px; }
+    table.frozen-table { border-collapse: collapse; width: 100%; background-color: white; }
+    table.frozen-table th, table.frozen-table td { border: 1px solid #CBD5E1; padding: 10px 12px; text-align: center; white-space: nowrap; }
+    table.frozen-table th { background-color: #3B82F6; color: white; font-weight: bold; position: sticky; top: 0; z-index: 10; }
+    /* 動態凍結欄位 */
+    table.frozen-table td.sticky-col, table.frozen-table th.sticky-col { position: sticky; z-index: 5; font-weight: bold; }
+    table.frozen-table th.sticky-col { z-index: 15; background-color: #1D4ED8; color: white; }
+    /* 斑馬紋 */
+    table.frozen-table tr:nth-child(even) td { background-color: #F8FAFC; }
+    /* 月曆 CSS */
+    .cal-table { width: 100%; border-collapse: collapse; table-layout: fixed; margin-bottom: 20px;}
+    .cal-table th { background-color: #1E3A8A; color: white; padding: 8px; text-align: center; border: 1px solid #CBD5E1; }
+    .cal-table td { border: 1px solid #CBD5E1; height: 110px; vertical-align: top; padding: 6px; background-color: white; }
+    .cal-table td.other-month { background-color: #F8FAFC; }
+    .cal-date { font-weight: bold; margin-bottom: 6px; display: block; color: #333; font-size: 1.1rem; }
+    .cal-other-date { color: #94A3B8; }
+    .cal-event { font-size: 0.85rem; color: #DC2626; background-color: #FEE2E2; padding: 3px 6px; border-radius: 4px; margin-bottom: 4px; display: block; line-height: 1.3; }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ==============================================================================
 # 🎯 系統核心設定（請將您的 Google 試算表與 GAS 網址直接填寫於此）
 # ==============================================================================
 # 1. 您的 Google 試算表網址
@@ -18,10 +56,6 @@ GS_URL = "https://docs.google.com/spreadsheets/d/1GLwY651HJBEDzUXDWmDONPp1j4Sj2J
 # 2. 您的 Google Apps Script 部署網址
 GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbxrHWClyYOu2RstCAWWA5CRIkR8_Wlqr7yWSwNo5fBnOibdDEo6lnEvf3U0dntysUVc/exec"
 
-# 3. 【動態學期設定】定義該班級「高一入學」的西元年份
-# 未來帶新班級時，只需修改此年份，系統會自動往後推算三年六個學期的日期區間！
-COHORT_START_YEAR = 2024  
-
 SEMESTERS = ["高一上學期", "高一下學期", "高二上學期", "高二下學期", "高三上學期", "高三下學期"]
 SEMESTER_MAPPING = {
     "高一上學期": "一上", "高一下學期": "一下",
@@ -29,7 +63,22 @@ SEMESTER_MAPPING = {
     "高三上學期": "三上", "高三下學期": "三下"
 }
 
-# 系統自動依據 COHORT_START_YEAR 產生各學期區間
+# ==============================================================================
+# 側邊欄頂部：班級屆次設定 (透過介面動態調整)
+# ==============================================================================
+with st.sidebar:
+    st.image("https://img.icons8.com/color/96/000000/google-sheets.png", width=55)
+    st.title("🎓 導師班級經營系統")
+    # 保留一個空白容器，供稍後資料讀取完畢後顯示成功訊息
+    sync_placeholder = st.empty()
+    
+    st.markdown("---")
+    with st.expander("⚙️ 班級屆次設定 (新班級適用)", expanded=False):
+        # 讓老師直接從網頁介面上修改高一入學年份
+        COHORT_START_YEAR = st.number_input("🏫 設定該班級「高一入學」年份", min_value=2000, max_value=2100, value=2024, step=1)
+        st.caption("💡 只要修改此年份，系統將自動推算三年六個學期的專屬日期區間，無須修改程式碼！")
+
+# 系統自動依據介面上設定的 COHORT_START_YEAR 動態產生各學期區間
 SEMESTER_RANGES = {
     "高一上學期": (datetime(COHORT_START_YEAR, 8, 1), datetime(COHORT_START_YEAR + 1, 1, 31)),
     "高一下學期": (datetime(COHORT_START_YEAR + 1, 2, 1), datetime(COHORT_START_YEAR + 1, 7, 31)),
@@ -38,6 +87,7 @@ SEMESTER_RANGES = {
     "高三上學期": (datetime(COHORT_START_YEAR + 2, 8, 1), datetime(COHORT_START_YEAR + 3, 1, 31)),
     "高三下學期": (datetime(COHORT_START_YEAR + 3, 2, 1), datetime(COHORT_START_YEAR + 3, 7, 31)),
 }
+
 
 # ==============================================================================
 # 智慧型日期學期判定核心邏輯
@@ -77,37 +127,6 @@ def is_date_in_semester(date_str, semester_name):
     except Exception:
         pass
     return False
-
-# ==============================================================================
-# 頁面配置與主題
-# ==============================================================================
-st.set_page_config(
-    page_title="導師班級經營管理系統",
-    page_icon="🎓",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-st.markdown("""
-<style>
-    .main-title { font-size: 2.2rem; color: #1E3A8A; font-weight: 700; margin-bottom: 20px; border-bottom: 3px solid #3B82F6; padding-bottom: 10px; }
-    .card-container { background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
-    .frozen-table-container { overflow-x: auto; max-width: 100%; border: 1px solid #E2E8F0; border-radius: 8px; margin-bottom: 20px; }
-    table.frozen-table { border-collapse: collapse; width: 100%; background-color: white; }
-    table.frozen-table th, table.frozen-table td { border: 1px solid #CBD5E1; padding: 10px 12px; text-align: center; white-space: nowrap; }
-    table.frozen-table th { background-color: #3B82F6; color: white; font-weight: bold; position: sticky; top: 0; z-index: 10; }
-    table.frozen-table td.sticky-col, table.frozen-table th.sticky-col { position: sticky; z-index: 5; font-weight: bold; }
-    table.frozen-table th.sticky-col { z-index: 15; background-color: #1D4ED8; color: white; }
-    table.frozen-table tr:nth-child(even) td { background-color: #F8FAFC; }
-    .cal-table { width: 100%; border-collapse: collapse; table-layout: fixed; margin-bottom: 20px;}
-    .cal-table th { background-color: #1E3A8A; color: white; padding: 8px; text-align: center; border: 1px solid #CBD5E1; }
-    .cal-table td { border: 1px solid #CBD5E1; height: 110px; vertical-align: top; padding: 6px; background-color: white; }
-    .cal-table td.other-month { background-color: #F8FAFC; }
-    .cal-date { font-weight: bold; margin-bottom: 6px; display: block; color: #333; font-size: 1.1rem; }
-    .cal-other-date { color: #94A3B8; }
-    .cal-event { font-size: 0.85rem; color: #DC2626; background-color: #FEE2E2; padding: 3px 6px; border-radius: 4px; margin-bottom: 4px; display: block; line-height: 1.3; }
-</style>
-""", unsafe_allow_html=True)
 
 # ==============================================================================
 # Google Sheet 免 API 讀寫核心邏輯 
@@ -243,6 +262,10 @@ if spreadsheet_id and "db_loaded" not in st.session_state:
     st.session_state["db_contribution_stats"] = load_sheet_csv(spreadsheet_id, "班級貢獻度統計", st.session_state["db_contribution_stats"])
     st.session_state["db_loaded"] = True
 
+if spreadsheet_id:
+    # 資料讀取後更新成功訊息
+    sync_placeholder.success("⚡ 雲端資料已同步成功！")
+
 if "db_contribution_history" in st.session_state:
     history_required_cols = ["日期", "座號", "姓名", "事由", "加扣分點數", "學期"]
     for col in history_required_cols:
@@ -259,17 +282,17 @@ for df_key in ["db_students", "db_contribution_history", "db_contribution_stats"
     if df_key in st.session_state and "座號" in st.session_state[df_key].columns:
         st.session_state[df_key]["座號"] = pd.to_numeric(st.session_state[df_key]["座號"], errors='coerce').fillna(0).astype(int)
 
+# 側邊欄剩餘導覽部分
 with st.sidebar:
-    st.image("https://img.icons8.com/color/96/000000/google-sheets.png", width=55)
-    st.title("🎓 導師班級經營系統")
-    if spreadsheet_id: st.success("⚡ 雲端資料已同步成功！")
-    
     st.markdown("---")
-    # 全局學期選擇器 (依據入學年動態推算的結果)
-    current_month = datetime.today().month
-    current_year = datetime.today().year
-    # 簡單預估目前預設學期 (此處仍可手動切換)
-    global_selected_semester = st.selectbox("🎯 全局設定：選擇目前學期", SEMESTERS, index=3)
+    # 智慧判定：根據系統今天的日期，自動計算現在屬於哪一個學期，並作為預設選項！
+    current_sem_by_today = get_semester_by_date(datetime.today())
+    try:
+        default_sem_idx = SEMESTERS.index(current_sem_by_today)
+    except ValueError:
+        default_sem_idx = 3 # 找不到時的容錯防護
+
+    global_selected_semester = st.selectbox("🎯 全局設定：選擇目前學期", SEMESTERS, index=default_sem_idx)
     
     st.markdown("---")
     menu = st.radio("功能導覽", ["📅 課表與出缺席即時管理", "📊 段考成績分析與趨勢", "🌟 班級貢獻度登記與統計"])
@@ -280,7 +303,6 @@ with st.sidebar:
 if menu == "📅 課表與出缺席即時管理":
     st.markdown(f'<div class="main-title">📅 課表與出缺席即時管理 <span style="font-size:1.2rem; color:gray;">({global_selected_semester})</span></div>', unsafe_allow_html=True)
     
-    # 【修改1】強化日期選擇標籤，讓老師知道可以預先請假
     today_date = st.date_input("📅 選擇點名或請假日期 (支援過去補點名或未來預先請假登記)", datetime.today())
         
     timetable_df = st.session_state["db_timetable"]
@@ -316,7 +338,6 @@ if menu == "📅 課表與出缺席即時管理":
         else:
             st.info(f"👉 該日期 ({today_date.strftime('%m/%d')}) 目前尚無任何同學請假或缺席。")
 
-    # 【修改1】讓選單的指引更明確
     st.markdown("##### ➕ 新增登記：選擇未到或請假的學生")
     absent_selections = st.multiselect(
         "請在此下拉選單勾選【未到】或【請假】的同學 (已在上方列表的同學若狀態無變動，無需重複選取)", 
@@ -343,7 +364,6 @@ if menu == "📅 課表與出缺席即時管理":
             with cols_abs[idx % 3]:
                 stu_name = sel.split(" - ")[1]
                 
-                # 【修改1】增加假別選擇，讓統計表與月曆顯示更精確
                 leave_type = st.selectbox(f"【{stu_name}】假別", ["缺席(未到)", "事假", "病假", "公假", "喪假"], key=f"type_{sel}")
                 
                 if available_periods:
@@ -383,10 +403,9 @@ if menu == "📅 課表與出缺席即時管理":
             
             # 將新紀錄附加到現有的總紀錄中
             st.session_state["db_attendance"] = pd.concat([st.session_state["db_attendance"], new_df], ignore_index=True)
-            # 【修改1防護機制】依照 日期、座號、姓名 去除重複項，保留最後一次輸入的結果（防止同一天重複登記同一個學生導致覆蓋錯誤）
+            # 防護機制: 去除重複項，保留最後一次輸入的結果
             st.session_state["db_attendance"] = st.session_state["db_attendance"].drop_duplicates(subset=['日期', '座號', '姓名'], keep='last')
             
-            # 傳送給 GAS 時，把「所選日期所有的紀錄」傳過去以防 GAS 取代整天機制
             updated_today_records = st.session_state["db_attendance"][
                 st.session_state["db_attendance"]["日期"].astype(str).str.replace("-", "/") == today_str
             ]
@@ -409,16 +428,14 @@ if menu == "📅 課表與出缺席即時管理":
             if status != "出席":
                 if date_str not in daily_absent_dict: daily_absent_dict[date_str] = []
                 detail_str = ""
-                # 解析新舊版的狀態字串
                 if ":" in status: 
-                    detail_str = f" ({status.split(':')[0][:2]})" # 取假別前兩字
+                    detail_str = f" ({status.split(':')[0][:2]})"
                 elif "全日" in status or status == "缺席": 
                     detail_str = f" ({status[:2]})"
                 daily_absent_dict[date_str].append(row["姓名"] + detail_str)
 
     col_cal1, col_cal2 = st.columns([1, 3])
     with col_cal1:
-        # 【修改1】將預設顯示的月曆月份自動綁定到上面選擇的「點名日期」，方便查看預先請假
         cal_year = st.selectbox("📅 選擇年份", [today_date.year + 1, today_date.year, today_date.year - 1, today_date.year - 2], index=1)
         cal_month = st.selectbox("📆 選擇月份", list(range(1, 13)), index=today_date.month - 1)
     
@@ -463,7 +480,7 @@ if menu == "📅 課表與出缺席即時管理":
     attendance_stats.insert(0, "座號", students_df["座號"].values)
     
     if not attn_df.empty:
-        for _, row in attn_df.iterrows():
+        for _, row in attn_iterrows():
             date_str = str(row["日期"])
             
             if not is_date_in_semester(date_str, global_selected_semester):
@@ -484,7 +501,6 @@ if menu == "📅 課表與出缺席即時管理":
                     day_timetable = sem_timetable[["節次", weekday_name]].replace('', np.nan).dropna(subset=[weekday_name])
                     
                     absent_periods = []
-                    # 【修改1】更新判斷邏輯，包容新增的事假/病假等前綴
                     if "全日" in status or status == "缺席":
                         absent_periods = day_timetable["節次"].tolist()
                     elif ":" in status:
@@ -633,7 +649,6 @@ elif menu == "🌟 班級貢獻度登記與統計":
             contri_date = st.date_input("加扣分日期", datetime.today(), key="contri_date_click")
             contri_event = st.text_input("事由描述", placeholder="例如：整潔工作認真...", key="contri_event_click")
         with col_input2:
-            # 【修改3】拆分為類別與自訂點數數字框
             contri_type = st.radio("類別", ["加分", "扣分"], horizontal=True, key="contri_type_click")
             contri_points = st.number_input("設定點數 (請輸入正整數)", min_value=1, value=1, step=1, key="contri_points_click")
         with col_input3:
@@ -660,7 +675,6 @@ elif menu == "🌟 班級貢獻度登記與統計":
             p_seats = [int(part) for part in re.split(r'[、，,\s;；]+', parsed_data.get("名單", "")) if part.strip().isdigit()]
             if not p_event or not p_seats: st.error("❌ 解析失敗！請確保格式正確。")
             else:
-                # 【修改3】升級文字解析器，自動抓取使用者輸入的數字
                 raw_pts_str = parsed_data.get("加扣分", "1")
                 nums = re.findall(r'\d+', raw_pts_str)
                 pt_val = int(nums[0]) if nums else 1
